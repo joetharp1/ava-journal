@@ -1,8 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { captureContext, connectionId, requestJournal, telegramPing, saveSettingsVerified, fitContext, generateEntry, checkStorage, recoverIndex } from '../runtime.mjs';
+import { captureContext, connectionId, holdSendState, requestJournal, telegramPing, saveSettingsVerified, fitContext, generateEntry, checkStorage, recoverIndex } from '../runtime.mjs';
 import { JOURNAL_INSTRUCTION } from '../content.mjs';
 const emitter = () => { const hooks = new Map(); return { on(n, fn) { if (!hooks.has(n)) hooks.set(n, []); hooks.get(n).push(fn); }, makeLast(n, fn) { this.on(n, fn); }, removeListener(n, fn) { hooks.set(n, (hooks.get(n) || []).filter(x => x !== fn)); }, async emit(n, ...args) { for (const fn of [...hooks.get(n) || []]) await fn(...args); }, count: n => (hooks.get(n) || []).length }; };
+test('journal releases its own ST busy flag even though isGenerating reads true', async () => {
+    const events = emitter(); let isSendPress = false;
+    const host = { eventSource: events, event_types: { GENERATION_STARTED: 'started' }, setSendButtonState: value => { isSendPress = value; }, isGenerating: () => isSendPress };
+    const release = holdSendState(host);
+    assert.equal(host.isGenerating(), true);
+    await events.emit('started', 'quiet', { automatic_trigger: true }, true);
+    release(); release();
+    assert.equal(host.isGenerating(), false); assert.equal(events.count('started'), 0);
+});
+test('a real generation takes ownership so journal cleanup leaves its flag intact', async () => {
+    const events = emitter(); let isSendPress = false;
+    const host = { eventSource: events, event_types: { GENERATION_STARTED: 'started' }, setSendButtonState: value => { isSendPress = value; }, isGenerating: () => isSendPress };
+    const release = holdSendState(host);
+    await events.emit('started', 'normal', {}, false);
+    release(); assert.equal(host.isGenerating(), true); assert.equal(events.count('started'), 0);
+});
 function fixture() {
     const settings = { chat_completion_source: 'custom', custom_url: 'https://provider.example/v1', temp_openai: 0.6, stream_openai: true, openai_max_tokens: 120, openai_max_context: 16000, function_calling: true };
     const c = { mainApi: 'openai', chatCompletionSettings: settings, getTokenCountAsync: async text => Math.ceil(text.length / 4), getRequestHeaders: () => ({ 'Content-Type': 'application/json', 'X-CSRF-Token': 'fixture' }) };

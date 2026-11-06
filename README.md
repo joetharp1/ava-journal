@@ -1,4 +1,4 @@
-# Ava Journal 0.1.2
+# Ava Journal 0.1.3
 
 Built for SillyTavern 1.19.0 Chat Completion mode. Separate client extension; no server plugin, dependencies or build step. Installable from GitHub. Automatic writing defaults off. The live storage check runs inside ST through its existing authenticated session before writing is allowed. Joe confirmed he has done `her_world`; no live card inspection or changes were performed.
 
@@ -23,13 +23,21 @@ Live access attempt on 6 November 2026: HTTPS root returned HTTP 401 with `WWW-A
 
 Path correction applies to the adapter, verify keys, upload return validation, read/open URLs, recovery index, panel backup path and tests. The files remain flat, named `ava-log-YYYY-MM-DD.md`; no server plugin or folder creation change is introduced. The actual deployed version must still be checked.
 
+## 0.1.3 — fix stuck busy state
+
+A source-backed defect in 0.1.2 could leave ST busy after a context-only attempt. `setSendButtonState(true)` sets `is_send_press`, and `isGenerating()` reads that same flag. The prior conditional cleanup therefore refused to release its own flag. This could prevent later journal attempts and opening chats. The earlier test harness incorrectly modeled those values as independent; it now matches ST and checks snapshot-only, no-job, reload and completed-write cleanup.
+
+The journal now tracks ownership of the send flag. It always releases its own flag, unless a real (non-dry-run) generation starts and takes ownership. Dry-run context assembly does not transfer ownership. A completed/stopped streaming processor no longer blocks an attempt. Write now immediately shows “Preparing journal…” and disables the button while work is underway.
+
+Update Ava Journal to 0.1.3 and reload to clear the previous page’s stuck flag. No chat files, character content, initiation settings or authentication settings are modified. This fix does not claim to diagnose a separate login failure.
+
 ## Additional 0.1.2 corrections
 
 - Source-contract assertions cover both `getChatCompletionModel` from openai.js and `hasPendingFileAttachment` from chats.js.
 - A Telegram failure preserves the saved filename in the success status.
 - Index recovery rejects empty closing beats.
 - A failed settings save restores the previous extension settings, local config and controls.
-- Journal cleanup releases Send only when `isGenerating()` is false.
+- The original 0.1.2 conditional Send cleanup is superseded by the ownership fix above.
 - Read-back stays in its existing system role; no wording or placement changes were made.
 - Storage verification creates a UUID-named `ava-journal-check-….txt` containing only a generic check message, confirms upload/verify/read bytes, deletes its own file and verifies removal. It uses ST CSRF headers and the current login. It never calls a model or Telegram and never registers the probe as a journal. A filename collision prevents upload; a content mismatch prevents deletion. Each request has a 20-second timeout. Failed checks are not repeatedly retried by the timer; use Check storage or enable again. An interrupted/failed probe may leave a harmless unregistered test file.
 
@@ -96,7 +104,7 @@ Independent UTF-8 fixtures in tests/fixtures contain the exact source strings wi
 
 ## Validation
 
-38 tests passed, including source-contract checks against the saved ST 1.19.0 source: daily triggers, DST/calendar boundaries, manual bypass, recorded-chat backfill, numeric suffixes, repeated-event counting, title fallback, exact content, no preset mutation, context budget, file collision/uncertain-upload recovery, Data Bank exclusion, request discard and generic Telegram.
+41 tests passed, including source-contract checks against the saved ST 1.19.0 source: daily triggers, DST/calendar boundaries, manual bypass, recorded-chat backfill, numeric suffixes, repeated-event counting, title fallback, exact content, no preset mutation, context budget, file collision/uncertain-upload recovery, Data Bank exclusion, request discard and generic Telegram.
 
 The browser harness passed at 393px width: storage-check failure blocks generation, then recovers with its temporary file removed; settings rollback; Telegram failure preserves Saved; a competing real generation retains Send lock; one word-count retry with identical request bytes; safe character rebind and restoration with existing journals retained; no paid request during snapshotting; manual second entry; draft preservation; two-tab generation exclusion; discard when conversation resumes in the other tab; no transcript append; inherited preset unchanged; correct Data Bank registration; normal read-back but no initiation injection; reload persistence; index recovery after browser-state deletion; no horizontal overflow; yesterday's actual prompt and memory-interceptor content used after opening another chat, with that chat left selected.
 
@@ -104,7 +112,7 @@ All provider, Telegram and file-server traffic in the browser harness used local
 
 Run:
 `node --test tests/*.test.mjs`
-Set `ST_SOURCE` to an ST 1.19.0 checkout for the five source-contract checks.
+Set `ST_SOURCE` to an ST 1.19.0 checkout for the six source-contract checks.
 `node tests/browser.cjs` uses Playwright from `CODEX_PRIMARY_RUNTIME_NODE_MODULES` and `CHROMIUM_EXECUTABLE` (default /tmp/chromium).
 
 ## Live validation

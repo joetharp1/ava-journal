@@ -1,5 +1,5 @@
 import { NAME, DEFAULTS, clone, localParts, recordKey, newDatabase, observe, plan, readBack, newestFirst, markdown, uploadEntry, backoff } from './core.mjs';
-import { openStore, connectionId, captureContext, requestJournal, generateEntry, fileApi, checkStorage, registerSaved, telegramPing, saveSettingsVerified, recoverIndex } from './runtime.mjs';
+import { openStore, connectionId, holdSendState, captureContext, requestJournal, generateEntry, fileApi, checkStorage, registerSaved, telegramPing, saveSettingsVerified, recoverIndex } from './runtime.mjs';
 
 export async function boot() {
     const [host, ext, api, chats, users, utils, lib, tokenizers] = await Promise.all([
@@ -22,7 +22,10 @@ export async function boot() {
         return !c.groupId && avatar && c.chatId ? { avatar, chatId: String(c.chatId), c } : null;
     };
     const draft = () => !!String(document.getElementById('send_textarea')?.value || '').trim() || chats.hasPendingFileAttachment();
-    const busy = () => host.isGenerating() || !!ext.getContext().streamingProcessor;
+    const busy = () => {
+        const stream = ext.getContext().streamingProcessor;
+        return host.isGenerating() || !!(stream && !stream.isFinished && !stream.isStopped);
+    };
     const save = async () => { await store.write(db); channel?.postMessage({ kind: 'saved' }); };
     const stamp = value => {
         if (typeof value === 'number') return value;
@@ -50,7 +53,7 @@ export async function boot() {
     };
 
     const panel = document.createElement('div'); panel.id = 'ava-journal-settings'; panel.className = 'extension_container';
-    panel.innerHTML = `<div class="inline-drawer"><div class="inline-drawer-toggle inline-drawer-header"><b>Journal · 0.1.2</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div>
+    panel.innerHTML = `<div class="inline-drawer"><div class="inline-drawer-toggle inline-drawer-header"><b>Journal · 0.1.3</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div>
       <div class="inline-drawer-content"><div class="aj-body">
       <label><input type="checkbox" id="aj-enabled"> Enable journal for this character</label>
       <div class="aj-buttons"><button type="button" class="menu_button" id="aj-storage">Check storage</button></div>
@@ -253,6 +256,8 @@ export async function boot() {
         if (running || !settings.avatar) return;
         if (!navigator.locks?.request) { status = 'Journal paused: browser generation locking is unavailable.'; render(); return; }
         running = true;
+        if (manual) status = 'Preparing journal…';
+        render();
         try {
             await navigator.locks.request(namespace, { ifAvailable: true }, async lock => {
                 if (!lock) { if (manual) status = 'Journal is already working in another tab.'; return; }
@@ -278,7 +283,7 @@ export async function boot() {
                         const current = active();
                         if ((current ? `${current.avatar}:${current.chatId}` : '') !== contextIdentity) throw new Error('Chat changed. Journal discarded.');
                     };
-                    host.setSendButtonState(true);
+                    const releaseSendState = holdSendState(host);
                     let timer;
                     try {
                         if (db.pending) { await completeSave(db.pending); return; }
@@ -321,7 +326,7 @@ export async function boot() {
                         }
                     } finally {
                         clearTimeout(timer); attempt = null; capturing = false;
-                        if (!host.isGenerating()) host.setSendButtonState(false);
+                        releaseSendState();
                     }
                 });
             });
@@ -335,7 +340,7 @@ export async function boot() {
         if (host.event_types[name]) host.eventSource.on(host.event_types[name], () => { invalidate(); schedule(); });
     }
     host.eventSource.on(host.event_types.GENERATION_STARTED, (type, options, dryRun) => {
-        if (dryRun || capturing) return;
+        if (dryRun) return;
         invalidate(); generation = { type, automatic: !!options?.automatic_trigger };
     });
     host.eventSource.on(host.event_types.GENERATION_ENDED, schedule);

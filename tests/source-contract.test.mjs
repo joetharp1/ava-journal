@@ -40,6 +40,11 @@ test('native request parameter builder and successful settings-save receipt are 
     assert.match(read('public/scripts/chats.js'), /export function hasPendingFileAttachment\(\)/);
     const script = read('public/script.js'); assert.match(script, /export function setSendButtonState/); assert.match(script, /export async function saveSettings/); assert.match(script, /await eventSource.emit\(event_types.SETTINGS_UPDATED\)/);
 });
+test('ST busy getter and send setter share the same flag; ownership must determine release', { skip: !root }, () => {
+    const script = read('public/script.js');
+    assert.match(script, /export const isGenerating = \(\) => \(is_send_press \|\| is_group_generating\)/);
+    assert.match(script, /export function setSendButtonState\(value\) \{\s+is_send_press = value;\s+\}/);
+});
 test('ST exports the same per-message tokenizer used by its Chat Completion Message class', { skip: !root }, () => {
     const tokenizer = read('public/scripts/tokenizers.js'), openai = read('public/scripts/openai.js');
     assert.match(tokenizer, /export async function countTokensOpenAIAsync\(messages, full = false\)/);

@@ -21,6 +21,21 @@ export function connectionId(c, api) {
     return JSON.stringify([s.chat_completion_source, api.getChatCompletionModel(s), s.custom_url || '', s.reverse_proxy || '']);
 }
 
+export function holdSendState(host) {
+    let transferred = false, released = false;
+    const onStarted = (_type, _options, dryRun) => { if (!dryRun) transferred = true; };
+    host.eventSource.on(host.event_types.GENERATION_STARTED, onStarted);
+    // In ST this setter changes the very flag returned by isGenerating().
+    // Track ownership instead of asking that flag whether it is safe to clear.
+    host.setSendButtonState(true);
+    return () => {
+        if (released) return;
+        released = true;
+        host.eventSource.removeListener(host.event_types.GENERATION_STARTED, onStarted);
+        if (!transferred) host.setSendButtonState(false);
+    };
+}
+
 // ST builds the character, lorebook, notes and history. No reconstruction or card edits.
 export async function captureContext({ host, c, guard }) {
     let messages;

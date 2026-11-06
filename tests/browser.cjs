@@ -8,7 +8,7 @@ const mocks = {
  '/script.js': `
  export const event_types=Object.fromEntries(['SETTINGS_UPDATED','GENERATE_AFTER_DATA','GENERATION_STARTED','GENERATION_ENDED','GENERATION_STOPPED','CHAT_COMPLETION_PROMPT_READY','CHAT_COMPLETION_SETTINGS_READY','MESSAGE_SENT','MESSAGE_RECEIVED','MESSAGE_EDITED','MESSAGE_UPDATED','MESSAGE_DELETED','MESSAGE_SWIPED','CHAT_CHANGED','CHAT_LOADED'].map(x=>[x,x]));
  const hooks=new Map(); export const eventSource={on(n,fn){if(!hooks.has(n))hooks.set(n,[]);hooks.get(n).push(fn)},makeLast(n,fn){this.on(n,fn)},removeListener(n,fn){hooks.set(n,(hooks.get(n)||[]).filter(x=>x!==fn))},async emit(n,...args){for(const fn of [...hooks.get(n)||[]])await fn(...args)}};
- export const isGenerating=()=>globalThis.realGeneration===true;export function setSendButtonState(v){globalThis.fixtureSendBusy=v};
+ export const isGenerating=()=>!!globalThis.fixtureSendBusy || globalThis.realGeneration===true;export function setSendButtonState(v){globalThis.fixtureSendBusy=v};
  export const getRequestHeaders=()=>({'Content-Type':'application/json'});
  export async function saveSettings(){if(globalThis.failSettings)return;localStorage.setItem('fixture-settings',JSON.stringify(globalThis.fixtureSettings));await eventSource.emit('SETTINGS_UPDATED')};
  export async function Generate(type,options,dry){if(!dry)throw Error('Visible generation forbidden');globalThis.captureCount=(globalThis.captureCount||0)+1;await eventSource.emit('GENERATION_STARTED',type,options,true);const c=globalThis.fixture;const prompt=[{role:'system',content:'AVA CARD — HER WORLD: plant and mug.'},...c.chat.map(m=>({role:m.is_user?'user':'assistant',content:m.mes}))];await eventSource.emit('GENERATE_AFTER_DATA',{prompt},true)};
@@ -59,6 +59,7 @@ function frozenClock() {
   await page.locator('#aj-enabled').check();await page.waitForFunction(()=>!document.querySelector('#aj-write').disabled);
   await page.evaluate(()=>app.tick());
   assert.equal(requests.length,0,'context snapshot makes no model request');
+  assert.equal(await page.evaluate(()=>fixtureSendBusy),false,'snapshot-only run releases the actual ST busy flag');
   const configBefore=await page.evaluate(()=>structuredClone(fixtureSettings['ava-journal']));
   await page.evaluate(()=>{globalThis.failSettings=true});await page.locator('#aj-hold').click();await page.waitForFunction(()=>document.querySelector('#aj-status').textContent.includes('not saved'));
   assert.deepEqual(await page.evaluate(()=>fixtureSettings['ava-journal']),configBefore,'failed settings save rolls memory back');
@@ -66,6 +67,7 @@ function frozenClock() {
   assert.deepEqual(await page.evaluate(()=>JSON.parse(localStorage.getItem('fixture-settings'))['ava-journal']),configBefore,'server saved settings unchanged');
   await page.evaluate(()=>{globalThis.failSettings=false});
   await page.locator('#aj-hold').check();await page.locator('#aj-write').click();await page.waitForFunction(()=>document.querySelector('#aj-entries').children.length===1);
+  assert.equal(await page.evaluate(()=>fixtureSendBusy),false,'completed journal releases its busy flag');
   assert.equal(requests.length,1);assert.equal(requests[0].messages.at(-1).role,'user');assert.equal(requests[0].temperature,.95);
   assert.equal(await page.evaluate(()=>fixture.chat.length),8,'no transcript append');
   assert.equal(await page.evaluate(()=>fixture.chatCompletionSettings.temp_openai),.61);
@@ -101,6 +103,7 @@ function frozenClock() {
   await page.reload();await page.waitForFunction(()=>!!globalThis.app);await page.evaluate(()=>app.tick());assert.equal(await page.locator('#aj-entries li').count(),3);
   await page.evaluate(()=>new Promise((resolve,reject)=>{const r=indexedDB.open('ava-journal:v1:test-user',1);r.onsuccess=()=>{const tx=r.result.transaction('journal','readwrite');tx.objectStore('journal').delete('state');tx.oncomplete=resolve;tx.onerror=reject}}));
   await page.reload();await page.waitForFunction(()=>!!globalThis.app);await page.evaluate(()=>app.tick());assert.equal(await page.locator('#aj-entries li').count(),3,'index rebuilt from disabled Data Bank registrations');
+  assert.equal(await page.evaluate(()=>fixtureSendBusy),false,'reload and no-due-job path leave chats accessible');
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth),false);
   await page.screenshot({path:path.join(root,'tests/mobile-preview.png'),fullPage:true});
   assert.deepEqual(errors,[]);
