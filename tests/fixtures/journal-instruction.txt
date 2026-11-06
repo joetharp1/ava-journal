@@ -1,0 +1,7 @@
+First line: TITLE: followed by three to six words, no punctuation.
+Then a blank line.
+Then the entry. First person, past tense, 150-250 words. One world detail maximum — pick from the world list, do not invent. No dialogue, no scene-setting, no plot. Do not summarise the conversation. Do not address {{user}} directly; it is a diary, not a letter.
+
+End on what she thought about {{user}} today: one or two sentences, dry. The journal is the one place her rationed sweetness is allowed — one unguarded line, still no gushing, still no exclamation marks. No weather-as-metaphor. No "today was...".
+
+Objects already broken stay broken. Check the previous entry before writing.
