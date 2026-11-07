@@ -14,7 +14,7 @@ const mocks = {
  export async function Generate(type,options,dry){if(!dry)throw Error('Visible generation forbidden');globalThis.captureCount=(globalThis.captureCount||0)+1;await eventSource.emit('GENERATION_STARTED',type,options,true);const c=globalThis.fixture;const prompt=[{role:'system',content:'AVA CARD — HER WORLD: plant and mug.'},...c.chat.map(m=>({role:m.is_user?'user':'assistant',content:m.mes}))];await eventSource.emit('GENERATE_AFTER_DATA',{prompt},true)};
  globalThis.host={eventSource,event_types,setSendButtonState};`,
  '/scripts/extensions.js': `
- export const extension_settings=globalThis.fixtureSettings=JSON.parse(localStorage.getItem('fixture-settings')||'{}');
+ export const extension_settings=globalThis.fixtureSettings=JSON.parse(localStorage.getItem('fixture-settings')||JSON.stringify({'ava-journal':{avatar:'Ava.png',enabled:false,timezone:'Europe/London'}}));
  export const getContext=()=>globalThis.fixture;
  globalThis.fixture={mainApi:'openai',characterId:0,characters:[{avatar:'Ava.png'}],chatId:'chat-a',name1:'Joe',name2:'Ava',chat:[],chatCompletionSettings:{chat_completion_source:'custom',custom_url:'https://fixture.invalid',temp_openai:0.61,stream_openai:true,openai_max_tokens:120,openai_max_context:16000,function_calling:true},getTokenCountAsync:async text=>Math.ceil(text.length/4),getRequestHeaders:()=>({'Content-Type':'application/json'})};
  for(let i=0;i<8;i++)fixture.chat.push({is_user:i%2===0,mes:'Recorded day message '+i,send_date:Date.parse('2026-11-06T12:00:00Z')+i*1000});`,
@@ -108,19 +108,24 @@ function frozenClock() {
   await page.screenshot({path:path.join(root,'tests/mobile-preview.png'),fullPage:true});
   assert.deepEqual(errors,[]);
   const entriesBeforeRebind=await page.evaluate(()=>app.snapshot().entries.length);
-  await page.evaluate(async()=>{fixture.characters.push({avatar:'Other.png'});fixture.characterId=1;fixture.chatId='other-chat';await host.eventSource.emit('CHAT_CHANGED')});
-  await page.locator('#aj-rebind').click();await page.waitForFunction(()=>fixtureSettings['ava-journal'].avatar==='Other.png');
-  assert.equal(await page.locator('#aj-enabled').isChecked(),false,'rebind does not auto-enable another character');
+  await page.evaluate(async()=>{fixture.characters.push({avatar:'Other.png'});fixture.characterId=1;fixture.chatId='other-chat';fixture.name2='Other';await host.eventSource.emit('CHAT_CHANGED')});
+  await page.waitForFunction(()=>document.querySelector('#aj-character').textContent.includes('Other'));
+  assert.equal(await page.locator('#aj-rebind').count(),0,'rebinding is no longer required');
+  assert.equal(await page.locator('#aj-enabled').isChecked(),false,'new character starts disabled');
   assert.equal(await page.evaluate(()=>app.snapshot().entries.length),entriesBeforeRebind,'old journals retained');
   assert.equal(await page.locator('#aj-entries li').count(),0,'old character journals stay isolated');
-  await page.evaluate(async()=>{fixture.characterId=0;fixture.chatId='chat-a';await host.eventSource.emit('CHAT_CHANGED')});
-  await page.locator('#aj-rebind').click();await page.waitForFunction(()=>document.querySelector('#aj-entries').children.length===3);
+  await page.locator('#aj-enabled').check();
+  await page.waitForFunction(()=>fixtureSettings['ava-journal'].profiles['Other.png']?.enabled);
+  assert.equal(await page.evaluate(()=>fixtureSettings['ava-journal'].profiles['Ava.png'].enabled),true);
+  await page.evaluate(async()=>{fixture.characterId=0;fixture.chatId='chat-a';fixture.name2='Ava';await host.eventSource.emit('CHAT_CHANGED')});
+  await page.waitForFunction(()=>document.querySelector('#aj-entries').children.length===3);
+  assert.equal(await page.locator('#aj-enabled').isChecked(),true);
   assert.equal(await page.evaluate(()=>fixture.characters.length),2,'no card is added or edited');
   await page.close();
   // New browser profile: record yesterday without writing, then load a different chat.
   files.clear();requests.length=0;
   await context.addInitScript(()=>{globalThis.fixtureUser='backfill-user';localStorage.removeItem('fixture-settings')});const second=await context.newPage();
-  await second.goto(url);await second.waitForFunction(()=>!!globalThis.app);await second.locator('#aj-enabled').check();await second.waitForFunction(()=>fixtureSettings['ava-journal']?.enabled && document.querySelector('#aj-storage-status').textContent.startsWith('Storage verified') && !document.querySelector('#aj-write').disabled);await second.evaluate(()=>app.tick());
+  await second.goto(url);await second.waitForFunction(()=>!!globalThis.app);await second.locator('#aj-enabled').check();await second.waitForFunction(()=>fixtureSettings['ava-journal']?.profiles?.['Ava.png']?.enabled && document.querySelector('#aj-storage-status').textContent.startsWith('Storage verified') && !document.querySelector('#aj-write').disabled);await second.evaluate(()=>app.tick());
   assert.equal(requests.length,0);
   await second.evaluate(async()=>{
     fixture.chat.push({is_user:true,mes:'Last user message yesterday',send_date:Date.parse('2026-11-06T12:00:20Z')});
@@ -134,6 +139,6 @@ function frozenClock() {
   assert.equal(requests.length,1);const sent=JSON.stringify(requests[0].messages);assert.ok(sent.includes('Recorded day message'));assert.ok(sent.includes('MEMORY INTERCEPTOR retained'));assert.ok(sent.includes('Actual final assistant answer'));assert.ok(!sent.includes('Unrelated new chat today'));assert.ok(sent.includes('2026-11-06'));
   assert.equal(await second.evaluate(()=>fixture.chatId),'chat-b');assert.ok(files.has('/user/files/ava-log-2026-11-06.md'));
   await context.close();
-  console.log('Browser integration passed: in-app storage gate and recovery, snapshots without model calls, manual extras, identical-request word-count retry, safe rebind, draft guard, discard on resume, Data Bank exclusion, read-back isolation, reload, mobile layout, recorded-chat backfill.');
+  console.log('Browser integration passed: in-app storage gate and recovery, snapshots without model calls, manual extras, identical-request word-count retry, independent character profiles, draft guard, discard on resume, Data Bank exclusion, read-back isolation, reload, mobile layout, recorded-chat backfill.');
  }finally{releaseGeneration?.();await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));}
 })().catch(e=>{console.error(e);process.exitCode=1});

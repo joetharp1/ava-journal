@@ -11,3 +11,5 @@
 #ava-journal-settings button[hidden] { display: none; }
 #ava-journal-settings #aj-entries { padding-left: 24px; margin: 0; }
 #ava-journal-settings #aj-entries li { margin: 7px 0; }
+
+#ava-journal-settings textarea { width:100%; max-width:100%; resize:vertical; min-height:160px; background:#25282d; color:#f2f2f2; -webkit-text-fill-color:#f2f2f2; padding:8px; border:1px solid #777; font:inherit; }

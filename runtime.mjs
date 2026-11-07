@@ -97,9 +97,9 @@ export async function generateEntry({ generate, guard, onRetry = () => {} }) {
     }
 }
 
-export async function requestJournal({ c, api, yaml, countMessageTokens, snapshot, date, previous, signal, guard, fetcher = fetch }) {
+export async function requestJournal({ c, api, yaml, countMessageTokens, snapshot, date, previous, instruction, signal, guard, fetcher = fetch }) {
     if (c.mainApi !== 'openai') throw new Error('Journal needs ST Chat Completion mode.');
-    if (snapshot.connection !== connectionId(c, api)) throw new Error('Select the connection used by this Ava conversation before writing its journal.');
+    if (snapshot.connection !== connectionId(c, api)) throw new Error('Select the connection used by this character’s conversation before writing its journal.');
     const settings = clone(c.chatCompletionSettings);
     // Request-local values only: never modify the live preset or initiation settings.
     settings.stream_openai = false;
@@ -108,7 +108,7 @@ export async function requestJournal({ c, api, yaml, countMessageTokens, snapsho
     settings.n = 1;
     const contextLimit = Number(settings.openai_max_context), budget = contextLimit - 2200;
     if (!Number.isFinite(budget) || budget < 1000) throw new Error(`Journal needs at least 3200 context tokens; this connection reports ${settings.openai_max_context ?? 'no limit'}. 2200 tokens are reserved for output and request overhead.`);
-    const messages = await fitContext(journalMessages(snapshot, date, previous), countMessageTokens, budget);
+    const messages = await fitContext(journalMessages(snapshot, date, previous, instruction), countMessageTokens, budget);
     guard();
     const { generate_data: data } = await api.createGenerationParameters(settings, api.getChatCompletionModel(settings), 'quiet', messages);
     // The CUSTOM backend applies YAML after standard fields. Preserve unrelated
@@ -234,12 +234,12 @@ export async function recoverIndex({ db, settings, avatar, read, yaml }) {
     return changed;
 }
 
-export async function telegramPing({ token, chatId, fetcher = fetch }) {
+export async function telegramPing({ token, chatId, name = 'Ava', fetcher = fetch }) {
     if (!/^\d+:[A-Za-z0-9_-]+$/.test(token || '') || !chatId) throw new Error('Telegram is not configured in Ava Initiation.');
     // UI/notification copy, never sent to Ava's model. No private journal text.
     const response = await fetcher(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text: 'Ava wrote a journal entry.', disable_notification: false }),
+        body: JSON.stringify({ chat_id: chatId, text: `${name} wrote a journal entry.`, disable_notification: false }),
         signal: AbortSignal.timeout(15000),
     });
     if (!response.ok) throw new Error(`Journal saved; Telegram ping failed (HTTP ${response.status}).`);

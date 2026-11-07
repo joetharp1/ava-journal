@@ -1,4 +1,4 @@
-import { NAME, DEFAULTS, clone, localParts, recordKey, newDatabase, observe, plan, readBack, newestFirst, markdown, uploadEntry, backoff } from './core.mjs';
+import { NAME, DEFAULTS, migrateConfig, characterSettings, updateCharacterConfig, planCharacters, clone, localParts, recordKey, newDatabase, observe, readBack, newestFirst, markdown, uploadEntry, backoff } from './core.mjs';
 import { openStore, connectionId, holdSendState, captureContext, requestJournal, generateEntry, fileApi, checkStorage, registerSaved, telegramPing, saveSettingsVerified, recoverIndex } from './runtime.mjs';
 
 export async function boot() {
@@ -10,7 +10,7 @@ export async function boot() {
     const namespace = `${NAME}:v1:${profile}`;
     const store = await openStore(namespace);
     let db = await store.read() || newDatabase();
-    let settings = { ...DEFAULTS, ...ext.extension_settings[NAME] };
+    let config = migrateConfig(ext.extension_settings[NAME]);
     let revision = 0, running = false, capturing = false, attempt = null, status = 'Journal is off.', debounceTimer;
     let generation = { type: '', automatic: false };
     let normalContext = null;
@@ -20,6 +20,10 @@ export async function boot() {
     const active = () => {
         const c = ext.getContext(), avatar = c.characters[c.characterId]?.avatar;
         return !c.groupId && avatar && c.chatId ? { avatar, chatId: String(c.chatId), c } : null;
+    };
+    const selectedSettings = () => {
+        const a = active();
+        return a ? characterSettings(config, a.avatar, a.c.name2) : { ...DEFAULTS };
     };
     const draft = () => !!String(document.getElementById('send_textarea')?.value || '').trim() || chats.hasPendingFileAttachment();
     const busy = () => {
@@ -41,40 +45,35 @@ export async function boot() {
     if (channel) channel.onmessage = event => {
         if (event.data?.kind === 'activity') invalidate(false);
         if (event.data?.kind === 'config') {
-            invalidate(false); settings = { ...DEFAULTS, ...event.data.settings };
-            ext.extension_settings[NAME] = clone(settings);
-            panel.querySelector('#aj-enabled').checked = settings.enabled;
-            panel.querySelector('#aj-hold').checked = settings.sceneHold;
-            panel.querySelector('#aj-telegram').checked = settings.telegram;
-            panel.querySelector('#aj-zone').value = settings.timezone;
+            invalidate(false); config = migrateConfig(event.data.config || event.data.settings);
+            ext.extension_settings[NAME] = clone(config);
+            syncControls();
             render();
         }
         if (event.data?.kind === 'saved' && !running) void store.read().then(value => { if (value) db = value; render(); });
     };
 
     const panel = document.createElement('div'); panel.id = 'ava-journal-settings'; panel.className = 'extension_container';
-    panel.innerHTML = `<div class="inline-drawer"><div class="inline-drawer-toggle inline-drawer-header"><b>Journal · 0.1.3</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div>
+    panel.innerHTML = `<div class="inline-drawer"><div class="inline-drawer-toggle inline-drawer-header"><b>Journal · 0.2.0</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div>
       <div class="inline-drawer-content"><div class="aj-body">
       <label><input type="checkbox" id="aj-enabled"> Enable journal for this character</label>
       <div class="aj-buttons"><button type="button" class="menu_button" id="aj-storage">Check storage</button></div>
       <small id="aj-storage-status">Storage will be checked before writing. Uses a temporary test file, then removes it.</small>
-      <p id="aj-character"></p>
-      <button type="button" class="menu_button" id="aj-rebind">Rebind to current chat</button>
+      <p id="aj-character"></p><small id="aj-profiles"></small>
+      <small>Settings and journal memories belong to the character whose chat is open. Other enabled characters keep their own settings.</small>
+      <details><summary>Journal writing instructions</summary><small>Keep the TITLE line and 150–250 word format so entries can be saved and remembered.</small><textarea id="aj-instruction" class="text_pole" rows="8"></textarea><button type="button" class="menu_button" id="aj-save-instruction">Save instructions for this character</button></details>
       <label><input type="checkbox" id="aj-hold"> Scene hold</label>
       <small>Pauses ordinary automatic writing and backfill. 23:30 catch-up and Write now still work.</small>
       <label>Local timezone <input id="aj-zone" class="text_pole" type="text" spellcheck="false"></label>
       <label><input type="checkbox" id="aj-telegram"> Telegram ping when an entry is saved</label>
       <small>Uses the bot already saved in Ava Initiation. Sends a generic notice, never the entry.</small>
-      <div class="aj-buttons"><button type="button" class="menu_button" id="aj-write">Write now</button><button type="button" class="menu_button" id="aj-cancel" hidden>Discard pending generation</button><button type="button" class="menu_button" id="aj-backup">Download all entries</button></div>
+      <div class="aj-buttons"><button type="button" class="menu_button" id="aj-write">Write now</button><button type="button" class="menu_button" id="aj-cancel" hidden>Discard pending generation</button><button type="button" class="menu_button" id="aj-backup">Download this character’s entries</button></div>
       <p id="aj-status" role="status" aria-live="polite"></p>
       <p>VPS folder: <code id="aj-path"></code><br>Files: <code>ava-log-YYYY-MM-DD.md</code> (numbered for extra entries).</p>
       <small>Also listed in Data Bank → Character, disabled for retrieval. VPS files are not a backup; download a copy weekly.</small>
       <ol id="aj-entries"></ol></div></div></div>`;
     (document.getElementById('extensions_settings') || document.getElementById('extensions_settings2') || document.body).append(panel);
-    panel.querySelector('#aj-enabled').checked = settings.enabled;
-    panel.querySelector('#aj-hold').checked = settings.sceneHold;
-    panel.querySelector('#aj-telegram').checked = settings.telegram;
-    panel.querySelector('#aj-zone').value = settings.timezone;
+    syncControls();
     panel.querySelector('#aj-path').textContent = `data/${profile}/user/files/`;
 
     function download(text, name) {
@@ -83,12 +82,14 @@ export async function boot() {
         setTimeout(() => URL.revokeObjectURL(url), 30000);
     }
     function render() {
+        const settings = selectedSettings();
         panel.querySelector('#aj-status').textContent = status;
-        panel.querySelector('#aj-character').textContent = settings.avatar ? `Character: ${settings.avatar.replace(/\.png$/i, '')}` : 'Open Ava’s chat, then enable her journal.';
-        panel.querySelector('#aj-write').disabled = running || !settings.avatar;
-        panel.querySelector('#aj-rebind').disabled = running || !!db.pending || storageState === 'checking';
+        panel.querySelector('#aj-profiles').textContent = 'Enabled journals: ' + (Object.keys(config.profiles).filter(a => config.profiles[a].enabled).map(a => characterSettings(config, a).name).join(', ') || 'none');
+        panel.querySelector('#aj-character').textContent = settings.avatar ? `Character: ${settings.name}` : 'Open a character’s chat to set up their journal.';
+        panel.querySelector('#aj-write').disabled = running || !settings.avatar || !config.profiles[settings.avatar];
+        for (const id of ['aj-hold', 'aj-telegram', 'aj-zone', 'aj-instruction', 'aj-save-instruction']) panel.querySelector(`#${id}`).disabled = running || !settings.avatar;
         panel.querySelector('#aj-storage').disabled = running || storageState === 'checking';
-        panel.querySelector('#aj-enabled').disabled = storageState === 'checking';
+        panel.querySelector('#aj-enabled').disabled = running || !settings.avatar || storageState === 'checking';
         panel.querySelector('#aj-storage-status').textContent = storageState === 'passed' ? 'Storage verified: upload, file lookup, read-back and cleanup passed.'
             : storageState === 'checking' ? 'Checking storage using your existing ST login…'
             : storageState === 'failed' ? `Storage check failed: ${storageError} Press Check storage to retry.`
@@ -101,24 +102,28 @@ export async function boot() {
             li.append(a); list.append(li);
         }
     }
-    async function saveConfig() {
+    async function saveConfig(settings) {
         const hadPrevious = Object.hasOwn(ext.extension_settings, NAME);
         const previous = clone(ext.extension_settings[NAME]);
-        ext.extension_settings[NAME] = clone(settings);
+        const before = clone(config);
+        config = updateCharacterConfig(migrateConfig(ext.extension_settings[NAME] || config), settings);
+        ext.extension_settings[NAME] = clone(config);
         try { await saveSettingsVerified(host); }
         catch (error) {
             if (hadPrevious) ext.extension_settings[NAME] = previous;
             else delete ext.extension_settings[NAME];
-            settings = { ...DEFAULTS, ...previous };
+            config = before;
             throw error;
         }
-        channel?.postMessage({ kind: 'config', settings: clone(settings) });
+        channel?.postMessage({ kind: 'config', config: clone(config) });
     }
     function syncControls() {
+        const settings = selectedSettings();
         panel.querySelector('#aj-enabled').checked = settings.enabled;
         panel.querySelector('#aj-hold').checked = settings.sceneHold;
         panel.querySelector('#aj-telegram').checked = settings.telegram;
         panel.querySelector('#aj-zone').value = settings.timezone;
+        panel.querySelector('#aj-instruction').value = settings.instruction || '';
     }
     async function ensureStorage(force = false) {
         if (storageTask) return storageTask;
@@ -136,51 +141,40 @@ export async function boot() {
         catch (error) { status = error.message; }
         render();
     };
-    panel.querySelector('#aj-rebind').onclick = async () => {
-        const before = clone(settings);
+    panel.querySelector('#aj-save-instruction').onclick = async () => {
         try {
-            if (running || db.pending) throw new Error('Finish the pending journal before rebinding.');
-            const a = active();
-            if (!a) throw new Error('Open the character’s one-to-one chat first.');
-            // Keep every existing file/record. Rebinding selects a character,
-            // not a new card, and never enables automation for it implicitly.
-            settings.avatar = a.avatar; settings.enabled = false;
-            invalidate(); normalContext = null;
-            await saveConfig();
-            status = 'Journal rebound to the current character. Enable automatic writing when ready. Existing entries are kept.';
-        } catch (error) {
-            settings = before; ext.extension_settings[NAME] = clone(before);
-            status = error.message;
-        }
-        panel.querySelector('#aj-enabled').checked = settings.enabled;
-        render();
+            const settings = selectedSettings();
+            const instruction = panel.querySelector('#aj-instruction').value.trim();
+            if (!instruction) throw new Error('Journal instructions cannot be empty.');
+            settings.instruction = instruction; invalidate(); await saveConfig(settings);
+            status = `Journal instructions saved for ${settings.name}.`;
+        } catch (error) { status = error.message; }
+        syncControls(); render();
     };
     panel.querySelector('#aj-enabled').onchange = async e => {
         try {
-            const a = active();
-            if (e.target.checked && !settings.avatar) {
-                if (!a) throw new Error('Open Ava’s one-to-one chat first.');
-                settings.avatar = a.avatar;
-            }
+            const settings = selectedSettings();
+            if (!settings.avatar) throw new Error('Open the character’s one-to-one chat first.');
             if (e.target.checked && !navigator.locks?.request) throw new Error('This browser does not support the journal’s generation lock.');
             if (e.target.checked) await ensureStorage(storageState === 'failed');
-            settings.enabled = e.target.checked; invalidate(); await saveConfig();
+            settings.enabled = e.target.checked; invalidate(); await saveConfig(settings);
             status = settings.enabled ? 'Journal enabled. Preparing the current conversation.' : 'Automatic writing is off.';
             render(); void tick();
         } catch (error) {
-            settings = { ...DEFAULTS, ...ext.extension_settings[NAME] };
+            config = migrateConfig(ext.extension_settings[NAME]);
             syncControls(); status = error.message; render();
         }
     };
     for (const [id, key] of [['aj-hold', 'sceneHold'], ['aj-telegram', 'telegram']]) panel.querySelector(`#${id}`).onchange = async e => {
-        try { settings[key] = e.target.checked; invalidate(); await saveConfig(); void tick(); }
+        try { const settings = selectedSettings(); settings[key] = e.target.checked; invalidate(); await saveConfig(settings); void tick(); }
         catch (error) { status = error.message; syncControls(); }
         render();
     };
     panel.querySelector('#aj-zone').onchange = async e => {
         try {
+            const settings = selectedSettings();
             localParts(Date.now(), e.target.value.trim());
-            settings.timezone = e.target.value.trim(); invalidate(); await saveConfig(); void tick();
+            settings.timezone = e.target.value.trim(); invalidate(); await saveConfig(settings); void tick();
         } catch (error) {
             syncControls(); status = error instanceof RangeError ? 'Enter a valid timezone, for example Europe/London.' : error.message; render();
         }
@@ -189,19 +183,21 @@ export async function boot() {
     panel.querySelector('#aj-cancel').onclick = () => { invalidate(); status = 'Discarding this generation.'; render(); };
     panel.querySelector('#aj-backup').onclick = async e => {
         e.target.disabled = true;
+        const settings = selectedSettings();
         try {
             const entries = db.entries.filter(x => x.avatar === settings.avatar).sort(newestFirst);
             if (!entries.length) throw new Error('No journal entries to download yet.');
             const parts = [];
             // Fetch the saved VPS files, rather than claiming the browser cache is a backup.
             for (const entry of entries) parts.push(`# ${entry.name}\n\n${await files.read(entry.url)}`);
-            download(parts.join('\n\n'), `ava-journal-backup-${localParts(Date.now(), settings.timezone).date}.md`);
+            download(parts.join('\n\n'), `journal-${settings.name.replace(/[^a-z0-9_-]/gi, '-')}-${localParts(Date.now(), settings.timezone).date}.md`);
             status = 'Backup download prepared. Keep the downloaded file outside the VPS.';
         } catch (error) { status = error.message; }
         finally { e.target.disabled = false; render(); }
     };
 
     async function prepareSnapshot(a, date, guard) {
+        const settings = characterSettings(config, a.avatar, a.c.name2);
         const key = recordKey(a.avatar, a.chatId, date);
         const record = db.records[key] ||= { avatar: a.avatar, chatId: a.chatId, date, count: 0, lastExchange: 0, retryAt: 0 };
         if (record.snapshot) return;
@@ -231,6 +227,7 @@ export async function boot() {
     }
 
     async function completeSave(pending) {
+        const settings = characterSettings(config, pending.entry.avatar);
         const saved = await uploadEntry({
             entry: pending.entry, text: pending.text, ...files,
             remember: async entry => { pending.entry = entry; db.pending = pending; await save(); },
@@ -246,14 +243,14 @@ export async function boot() {
         if (settings.telegram) {
             try {
                 const existing = ext.extension_settings['ava-initiation'] || {};
-                await telegramPing({ token: existing.telegramToken, chatId: existing.telegramChatId });
+                await telegramPing({ token: existing.telegramToken, chatId: existing.telegramChatId, name: settings.name });
             } catch { status = `Saved ${saved.name} · Telegram ping failed.`; }
         }
         render();
     }
 
     async function tick(manual = false) {
-        if (running || !settings.avatar) return;
+        if (running) return;
         if (!navigator.locks?.request) { status = 'Journal paused: browser generation locking is unavailable.'; render(); return; }
         running = true;
         if (manual) status = 'Preparing journal…';
@@ -263,15 +260,16 @@ export async function boot() {
                 if (!lock) { if (manual) status = 'Journal is already working in another tab.'; return; }
                 db = await store.read() || newDatabase();
                 // Reload server-backed settings from this tab; journal never edits initiation state.
-                settings = { ...DEFAULTS, ...ext.extension_settings[NAME] };
-                if (settings.enabled || manual || db.pending) await ensureStorage();
-                if (await recoverIndex({ db, settings: ext.extension_settings, avatar: settings.avatar, read: files.read, yaml: lib.yaml })) await save();
+                config = migrateConfig(ext.extension_settings[NAME] || config);
+                const settings = selectedSettings();
+                if (Object.values(config.profiles).some(p => p.enabled) || manual || db.pending) await ensureStorage();
+                for (const avatar of Object.keys(config.profiles)) if (await recoverIndex({ db, settings: ext.extension_settings, avatar, read: files.read, yaml: lib.yaml })) await save();
                 const a = active(), now = Date.now();
                 if (a?.avatar === settings.avatar) {
                     if (observe(db, { ...a, messages: a.c.chat, timezone: settings.timezone, now, timestamp: stamp })) await save();
                 }
                 if (draft() || busy()) { if (manual) status = 'Waiting: finish the draft or current generation, then press Write now.'; return; }
-                if (!settings.enabled && !manual && !db.pending) return;
+                if (!Object.values(config.profiles).some(p => p.enabled) && !manual && !db.pending) return;
                 // The existing initiation execution mutex coordinates provider access only.
                 // No initiation state, timers, budgets, prompts or backoff are read or written.
                 await navigator.locks.request(`ava-initiation:v1:${profile}`, { ifAvailable: true }, async otherLock => {
@@ -284,7 +282,7 @@ export async function boot() {
                         if ((current ? `${current.avatar}:${current.chatId}` : '') !== contextIdentity) throw new Error('Chat changed. Journal discarded.');
                     };
                     const releaseSendState = holdSendState(host);
-                    let timer;
+                    let timer, job;
                     try {
                         if (db.pending) { await completeSave(db.pending); return; }
                         if (a?.avatar === settings.avatar) {
@@ -293,37 +291,33 @@ export async function boot() {
                             // Opening yesterday's untouched recorded chat can repair a missing snapshot.
                             for (const r of Object.values(db.records).filter(r => r.avatar === a.avatar && r.chatId === a.chatId && !r.snapshot && r.date !== date)) await prepareSnapshot(a, r.date, guard);
                         }
-                        const job = plan(db, settings, now, manual, a);
-                        if (!job) { status = settings.enabled ? 'Ready. Waiting for the next journal opportunity.' : 'Automatic writing is off.'; return; }
+                        job = planCharacters(db, config, now, manual, a, (snapshot, target) => snapshot && snapshot.avatar === target.avatar && snapshot.chatId === target.chatId && snapshot.connection === connectionId(ext.getContext(), api));
+                        const jobSettings = job ? characterSettings(config, job.avatar) : settings;
+                        if (!job) { status = Object.values(config.profiles).some(p => p.enabled) ? 'Ready. Enabled journals wait for their saved conversation, matching connection and next opportunity.' : 'Automatic writing is off.'; return; }
                         const record = db.records[recordKey(job.avatar, job.chatId, job.date)];
-                        if (!record?.snapshot) { status = `Backfill waiting for its recorded Ava chat (${job.date}). No context from another chat will be used.`; return; }
+                        if (record?.snapshot && (record.snapshot.avatar !== job.avatar || record.snapshot.chatId !== job.chatId)) throw new Error('Saved journal context does not match its character and chat.');
+                        if (!record?.snapshot) { status = `Journal waiting for its recorded chat (${job.date}). No context from another chat will be used.`; return; }
                         const previous = db.entries.filter(e => e.avatar === job.avatar && e.date <= job.date).sort(newestFirst)[0];
                         attempt = { controller: new AbortController(), discard: false, stage: 'generation' };
                         timer = setTimeout(() => { if (attempt) { attempt.discard = true; attempt.controller.abort(); } }, 150000);
-                        status = `Writing ${job.date}${job.type === 'backfill' ? ' from its saved conversation' : ''}…`; render();
+                        status = `Writing ${jobSettings.name} · ${job.date}${job.type === 'backfill' ? ' from its saved conversation' : ''}…`; render();
                         const parsed = await generateEntry({
-                            generate: () => requestJournal({ c: ext.getContext(), api, yaml: lib.yaml, countMessageTokens: tokenizers.countTokensOpenAIAsync, snapshot: record.snapshot, date: job.date, previous, signal: attempt.controller.signal, guard }),
+                            generate: () => requestJournal({ c: ext.getContext(), api, yaml: lib.yaml, countMessageTokens: tokenizers.countTokensOpenAIAsync, snapshot: record.snapshot, date: job.date, previous, instruction: jobSettings.instruction, signal: attempt.controller.signal, guard }),
                             guard,
                             onRetry: () => { status = 'Entry missed the word count. Trying once more…'; render(); },
                         });
                         guard();
                         const entry = { ...parsed, avatar: job.avatar, chatId: job.chatId, date: job.date, created: Date.now() };
-                        const text = markdown(entry, entry.created, settings.timezone);
+                        const text = markdown(entry, entry.created, jobSettings.timezone);
                         attempt.stage = 'saving'; clearTimeout(timer); render();
                         db.pending = { entry, text }; await save();
                         await completeSave(db.pending);
                     } catch (error) {
-                        if (attempt?.discard || error?.name === 'AbortError') {
-                            status = 'Journal generation discarded. A later opportunity can try again.';
-                            const job = plan(db, settings, now, manual, a);
-                            const r = job && db.records[recordKey(job.avatar, job.chatId, job.date)];
-                            if (r) { backoff(r, Date.now()); await save(); }
-                        } else {
-                            status = error.message || 'Journal failed. Nothing overwritten.';
-                            const job = plan(db, settings, now, manual, a);
-                            const r = job && db.records[recordKey(job.avatar, job.chatId, job.date)];
-                            if (r) { backoff(r, Date.now()); await save(); }
-                        }
+                        status = attempt?.discard || error?.name === 'AbortError'
+                            ? 'Journal generation discarded. A later opportunity can try again.'
+                            : error.message || 'Journal failed. Nothing overwritten.';
+                        const r = job && db.records[recordKey(job.avatar, job.chatId, job.date)];
+                        if (r) { backoff(r, Date.now()); await save(); }
                     } finally {
                         clearTimeout(timer); attempt = null; capturing = false;
                         releaseSendState();
@@ -337,7 +331,7 @@ export async function boot() {
     const schedule = () => { clearTimeout(debounceTimer); debounceTimer = setTimeout(() => void tick(), 2000); };
     document.getElementById('send_textarea')?.addEventListener('input', () => { invalidate(); schedule(); });
     for (const name of ['MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED', 'MESSAGE_UPDATED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'CHAT_CHANGED', 'CHAT_LOADED']) {
-        if (host.event_types[name]) host.eventSource.on(host.event_types[name], () => { invalidate(); schedule(); });
+        if (host.event_types[name]) host.eventSource.on(host.event_types[name], () => { invalidate(); if (name === 'CHAT_CHANGED' || name === 'CHAT_LOADED') { normalContext = null; syncControls(); render(); } schedule(); });
     }
     host.eventSource.on(host.event_types.GENERATION_STARTED, (type, options, dryRun) => {
         if (dryRun) return;
@@ -346,6 +340,7 @@ export async function boot() {
     host.eventSource.on(host.event_types.GENERATION_ENDED, schedule);
     host.eventSource.on(host.event_types.GENERATION_STOPPED, () => { invalidate(); schedule(); });
     host.eventSource.makeLast(host.event_types.CHAT_COMPLETION_SETTINGS_READY, async data => {
+        const settings = selectedSettings();
         if (running || generation.automatic || !['normal', undefined].includes(generation.type) || !settings.enabled) return;
         const a = active(); if (a?.avatar !== settings.avatar || !Array.isArray(data.messages)) return;
         const last = [...a.c.chat].reverse().find(m => !m.is_system);
@@ -372,8 +367,9 @@ export async function boot() {
         // No persistent extension prompt: read-back cannot leak into initiations,
         // journal snapshots, other quiet tasks, group chats or another character.
         if (event.dryRun || capturing || generation.automatic || !['normal', 'continue', 'swipe', 'regenerate', undefined].includes(generation.type)) return;
-        const a = active(); if (a?.avatar !== settings.avatar) return;
-        const text = readBack(db.entries, settings.avatar);
+        const settings = selectedSettings();
+        const a = active(); if (!settings.avatar || a?.avatar !== settings.avatar) return;
+        const text = readBack(db.entries, settings.avatar, settings.readBackTemplate, settings.name);
         if (text) event.chat.push({ role: 'system', content: text });
     });
     document.addEventListener('visibilitychange', () => { if (!document.hidden) schedule(); });
@@ -385,7 +381,7 @@ export async function boot() {
 
 if (typeof window !== 'undefined' && globalThis.SillyTavern) {
     const start = () => boot().catch(() => {
-        const p = document.createElement('p'); p.textContent = 'Ava Journal could not start. Reload SillyTavern and check browser storage is available.';
+        const p = document.createElement('p'); p.textContent = 'Journal could not start. Reload SillyTavern and check browser storage is available.';
         (document.getElementById('extensions_settings') || document.body).append(p);
     });
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true }); else void start();

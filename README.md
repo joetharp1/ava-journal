@@ -1,10 +1,24 @@
-# Ava Journal 0.1.3
+# Character Journals 0.2.0
 
 Built for SillyTavern 1.19.0 Chat Completion mode. Separate client extension; no server plugin, dependencies or build step. Installable from GitHub. Automatic writing defaults off. The live storage check runs inside ST through its existing authenticated session before writing is allowed. Joe confirmed he has done `her_world`; no live card inspection or changes were performed.
 
+## Multi-character update (0.2.0)
+
+Open each character's one-to-one chat, then enable **Journal → Enable journal for this character**. The panel follows the open character automatically. Rebinding is removed. Ava, Eve and Marnie can all remain enabled with independent timezone, scene hold, Telegram choice and editable journal instructions. New characters start disabled.
+
+The existing 0.1.x bound profile migrates automatically, preserving its enabled state, timezone, hold, notification choice and the exact original Danny journal/read-back strings. Saved entries, activity snapshots, pending saves and Data Bank registrations are retained. Other profiles use a neutral diary instruction referring to their own card voice and recorded conversation, without Ava's world or style restrictions. Card fields and World Info are never edited.
+
+Daily completion and backfill are checked separately per character. Due entries run serially under the existing locks, using only that character's saved prompt, previous journal and matching connection. An unavailable context/model waits without blocking other eligible characters. Chat activity or switching during generation discards the pending generation. This is still a browser scheduler: keep ST open; a suspended or closed app delays writing until a later opportunity.
+
+Read-back, panel lists, Data Bank attachments and backup downloads are filtered by character avatar. Telegram uses the existing bot with an owner-specific generic notice, e.g. “Eve March wrote a journal entry.” It never includes the entry body. VPS filenames retain the legacy `ava-log-` prefix for compatibility with Written Memory Search; avatar metadata and Data Bank ownership separate the entries, with collision suffixes preventing overwrites.
+
+Validation: 54 Node tests pass with ST 1.19.0 source-contract checks enabled, including the real boot/panel adapter in a simulated DOM, migration and failed-save rollback, independent enable switches, per-character daily scheduling, source-context/previous-entry isolation, read-back isolation and named notifications. Existing fixed-content fixtures still match byte for byte. The Chromium harness is updated but has not been executed for this release because Chromium startup was blocked in this environment. Live installation remains to be checked in Joe's ST.
+
 ## Installation
 
-In ST, use Extensions → Install extension with `https://github.com/joetharp1/ava-journal.git`, then reload. Open Ava’s chat and enable Journal. Storage checks automatically; after it passes, press Write now once for the live generation test. No terminal, server plugin or manual file copy is needed. Subsequent versions use the extension Update button.
+Existing users: update **Ava Journal** in ST's extension manager, then reload. Confirm **Journal · 0.2.0**. Open Eve's chat and enable her journal, then repeat for Marnie. Ava's existing enabled profile is preserved automatically. Use **Write now** once in Eve's chat to verify the first live entry. No terminal or server changes are required.
+
+New users: Extensions → Install extension → `https://github.com/joetharp1/ava-journal.git`. Open a character chat and enable Journal. Storage checks run automatically before writing.
 
 ## Review fixes and runtime checks
 
@@ -106,7 +120,7 @@ Independent UTF-8 fixtures in tests/fixtures contain the exact source strings wi
 
 41 tests passed, including source-contract checks against the saved ST 1.19.0 source: daily triggers, DST/calendar boundaries, manual bypass, recorded-chat backfill, numeric suffixes, repeated-event counting, title fallback, exact content, no preset mutation, context budget, file collision/uncertain-upload recovery, Data Bank exclusion, request discard and generic Telegram.
 
-The browser harness passed at 393px width: storage-check failure blocks generation, then recovers with its temporary file removed; settings rollback; Telegram failure preserves Saved; a competing real generation retains Send lock; one word-count retry with identical request bytes; safe character rebind and restoration with existing journals retained; no paid request during snapshotting; manual second entry; draft preservation; two-tab generation exclusion; discard when conversation resumes in the other tab; no transcript append; inherited preset unchanged; correct Data Bank registration; normal read-back but no initiation injection; reload persistence; index recovery after browser-state deletion; no horizontal overflow; yesterday's actual prompt and memory-interceptor content used after opening another chat, with that chat left selected.
+For the earlier 0.1.x release, the browser harness passed at 393px width: storage-check failure blocks generation, then recovers with its temporary file removed; settings rollback; Telegram failure preserves Saved; a competing real generation retains Send lock; one word-count retry with identical request bytes; safe character rebind and restoration with existing journals retained; no paid request during snapshotting; manual second entry; draft preservation; two-tab generation exclusion; discard when conversation resumes in the other tab; no transcript append; inherited preset unchanged; correct Data Bank registration; normal read-back but no initiation injection; reload persistence; index recovery after browser-state deletion; no horizontal overflow; yesterday's actual prompt and memory-interceptor content used after opening another chat, with that chat left selected.
 
 All provider, Telegram and file-server traffic in the browser harness used local fixtures. This is not a live ST/Venice/Telegram smoke test. No private conversation diagnostics were requested or shared.
 
@@ -117,4 +131,4 @@ Set `ST_SOURCE` to an ST 1.19.0 checkout for the six source-contract checks.
 
 ## Live validation
 
-Installation and the first real journal generation remain user-side checks. Enable in Ava’s chat, wait for “Storage verified”, then press Write now once. The generated entry is a real dated journal file and is registered in Data Bank; no transcript message is added. The storage test itself is disposable and removes its own file. Report the panel status if either step fails; private chat diagnostics are not required.
+Installation and the first real journal generation remain user-side checks. Enable in the intended character’s chat, wait for “Storage verified”, then press Write now once. The generated entry is a real dated journal file and is registered in Data Bank; no transcript message is added. The storage test itself is disposable and removes its own file. Report the panel status if either step fails; private chat diagnostics are not required.

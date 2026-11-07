@@ -1,10 +1,33 @@
-import { JOURNAL_INSTRUCTION, READ_BACK } from './content.mjs';
+import { JOURNAL_INSTRUCTION, READ_BACK, CHARACTER_JOURNAL_INSTRUCTION, CHARACTER_READ_BACK } from './content.mjs';
 
 export const NAME = 'ava-journal';
 export const FILE_PREFIX = '/user/files/';
 export const MINUTE = 60_000;
 export const DEFAULTS = Object.freeze({ enabled: false, avatar: '', timezone: 'Europe/London', sceneHold: false, telegram: false });
 export const clone = value => structuredClone(value);
+export function migrateConfig(value = {}) {
+    if (value?.version === 2 && value.profiles) return clone(value);
+    const config = { version: 2, profiles: {} };
+    if (value?.avatar) config.profiles[value.avatar] = { ...DEFAULTS, ...clone(value), instruction: JOURNAL_INSTRUCTION, readBackTemplate: READ_BACK };
+    return config;
+}
+export function characterSettings(config, avatar, name = '') {
+    return { ...DEFAULTS, instruction: CHARACTER_JOURNAL_INSTRUCTION, readBackTemplate: CHARACTER_READ_BACK,
+        ...clone(config.profiles?.[avatar] || {}), avatar, name: name || config.profiles?.[avatar]?.name || avatar.replace(/\.png$/i, '') };
+}
+export function updateCharacterConfig(config, settings) {
+    if (!settings.avatar) throw new Error('Open a character chat first.');
+    const next = migrateConfig(config);
+    next.profiles[settings.avatar] = clone(settings);
+    return next;
+}
+export function planCharacters(db, config, now, manual = false, active = null, usable = () => true) {
+    if (manual) return active ? plan(db, characterSettings(config, active.avatar), now, true, active) : null;
+    return Object.keys(config.profiles).map(avatar => plan(db, characterSettings(config, avatar), now, false, active))
+        .filter(job => job && usable(db.records[recordKey(job.avatar, job.chatId, job.date)]?.snapshot, job))
+        .sort((a, b) => a.date.localeCompare(b.date)
+            || (db.records[recordKey(a.avatar, a.chatId, a.date)]?.lastExchange || 0) - (db.records[recordKey(b.avatar, b.chatId, b.date)]?.lastExchange || 0))[0] || null;
+}
 export function localParts(now, timezone) {
     const p = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(now)).map(x => [x.type, x.value]));
     return { date: `${p.year}-${p.month}-${p.day}`, minutes: +p.hour * 60 + +p.minute, time: `${p.hour}:${p.minute}` };
@@ -71,7 +94,7 @@ export function observe(db, { avatar, chatId, messages, timezone, now, timestamp
         changed = true;
     }
     for (const [key, r] of Object.entries(db.records)) {
-        if (r.date < yesterday) { delete db.records[key]; changed = true; }
+        if (r.avatar === avatar && r.date < yesterday) { delete db.records[key]; changed = true; }
     }
     return changed;
 }
@@ -99,18 +122,19 @@ export function parseEntry(raw) {
     if (!beat || beat.length > 900) throw new Error('Journal closing beat is too long for the read-back budget. Nothing saved.');
     return { title, body, beat, fallback };
 }
-export function readBack(entries, avatar) {
+export function readBack(entries, avatar, template = READ_BACK, name = '') {
     const recent = entries.filter(e => e.avatar === avatar).sort(newestFirst).slice(0, 3);
     if (!recent.length) return '';
     // Substitution callbacks prevent $&, $', etc. in model text being interpreted.
-    return READ_BACK.replace('[titles]', () => recent.map(e => e.title).join(' | ')).replace('[beat]', () => recent[0].beat);
+    return template.replaceAll('{{char}}', () => name || avatar.replace(/\.png$/i, '')).replace('[titles]', () => recent.map(e => e.title).join(' | ')).replace('[beat]', () => recent[0].beat);
 }
-export function journalMessages(snapshot, date, previous) {
-    if (!snapshot || !Array.isArray(snapshot.messages) || !snapshot.messages.length) throw new Error('The recorded conversation has no saved context yet. Open that Ava chat once to prepare it.');
+export function journalMessages(snapshot, date, previous, instruction = JOURNAL_INSTRUCTION) {
+    if (!snapshot || !Array.isArray(snapshot.messages) || !snapshot.messages.length) throw new Error('The recorded conversation has no saved context yet. Open that character’s chat once to prepare it.');
+    if (previous && previous.avatar !== snapshot.avatar) throw new Error('Previous journal belongs to a different character.');
     const messages = clone(snapshot.messages);
     // These JSON keys are data labels, not additional authored instructions.
     messages.push({ role: 'system', content: JSON.stringify({ journal_date: date, timezone: snapshot.timezone, previous_journal: previous ? { date: previous.date, title: previous.title, body: previous.body } : null }) });
-    messages.push({ role: 'user', content: JOURNAL_INSTRUCTION.replaceAll('{{user}}', snapshot.user) });
+    messages.push({ role: 'user', content: instruction.replaceAll('{{user}}', () => snapshot.user).replaceAll('{{char}}', () => snapshot.character) });
     return messages;
 }
 export function markdown(entry, now, timezone) {
