@@ -44,6 +44,7 @@ async function harness() {
         '../../../chats.js': { hasPendingFileAttachment: () => false }, '../../../user.js': { getCurrentUserHandle: () => 'joe' },
         '../../../utils.js': { timestampToMoment: v => ({ valueOf: () => v }) }, '../../../../lib.js': { yaml: {} },
         '../../../tokenizers.js': { countTokensOpenAIAsync: async () => 1 }, './core.mjs': core,
+        './arc/client.mjs': { installArcBridge: () => ({ forTarget: () => undefined }) },
         './runtime.mjs': { ...runtime,
             openStore: async () => ({ read: async () => structuredClone(stored), write: async data => { stored = structuredClone(data); } }),
             checkStorage: async () => {}, recoverIndex: async () => false,

@@ -1,5 +1,6 @@
 import { NAME, DEFAULTS, migrateConfig, characterSettings, updateCharacterConfig, planCharacters, clone, localParts, recordKey, newDatabase, observe, readBack, newestFirst, markdown, uploadEntry, backoff } from './core.mjs';
 import { openStore, connectionId, holdSendState, captureContext, requestJournal, generateEntry, fileApi, checkStorage, registerSaved, telegramPing, saveSettingsVerified, recoverIndex } from './runtime.mjs';
+import { installArcBridge } from './arc/client.mjs';
 
 export async function boot() {
     const [host, ext, api, chats, users, utils, lib, tokenizers] = await Promise.all([
@@ -7,6 +8,7 @@ export async function boot() {
         import('../../../chats.js'), import('../../../user.js'), import('../../../utils.js'), import('../../../../lib.js'), import('../../../tokenizers.js'),
     ]);
     const profile = users.getCurrentUserHandle();
+    const arc = installArcBridge({ host, ext, yaml: lib.yaml });
     const namespace = `${NAME}:v1:${profile}`;
     const store = await openStore(namespace);
     let db = await store.read() || newDatabase();
@@ -54,7 +56,7 @@ export async function boot() {
     };
 
     const panel = document.createElement('div'); panel.id = 'ava-journal-settings'; panel.className = 'extension_container';
-    panel.innerHTML = `<div class="inline-drawer"><div class="inline-drawer-toggle inline-drawer-header"><b>Journal · 0.2.0</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div>
+    panel.innerHTML = `<div class="inline-drawer"><div class="inline-drawer-toggle inline-drawer-header"><b>Journal · 0.3.0-alpha.1</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div>
       <div class="inline-drawer-content"><div class="aj-body">
       <label><input type="checkbox" id="aj-enabled"> Enable journal for this character</label>
       <div class="aj-buttons"><button type="button" class="menu_button" id="aj-storage">Check storage</button></div>
@@ -302,7 +304,8 @@ export async function boot() {
                         timer = setTimeout(() => { if (attempt) { attempt.discard = true; attempt.controller.abort(); } }, 150000);
                         status = `Writing ${jobSettings.name} · ${job.date}${job.type === 'backfill' ? ' from its saved conversation' : ''}…`; render();
                         const parsed = await generateEntry({
-                            generate: () => requestJournal({ c: ext.getContext(), api, yaml: lib.yaml, countMessageTokens: tokenizers.countTokensOpenAIAsync, snapshot: record.snapshot, date: job.date, previous, instruction: jobSettings.instruction, signal: attempt.controller.signal, guard }),
+                            generate: () => requestJournal({ c: ext.getContext(), api, yaml: lib.yaml, countMessageTokens: tokenizers.countTokensOpenAIAsync, snapshot: record.snapshot, date: job.date, previous, instruction: jobSettings.instruction, signal: attempt.controller.signal, guard,
+                                fetcher: arc.forTarget({ avatar: job.avatar, group: false, chatId: job.chatId }) }),
                             guard,
                             onRetry: () => { status = 'Entry missed the word count. Trying once more…'; render(); },
                         });

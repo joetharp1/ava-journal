@@ -1,3 +1,9 @@
+# Calendar foundation — review build 0.3.0-alpha.1
+
+The requested Ava-only state, date anchors, request-time injection and server-backed duplicate protection are implemented on a development branch. The calendar is inactive by default; the birth scheduler, event tool and setup panel are not active or installed. See [arc/README.md](arc/README.md) for the accepted specification, implementation, validation and remaining activation work.
+
+---
+
 # Character Journals 0.2.0
 
 Built for SillyTavern 1.19.0 Chat Completion mode. Separate client extension; no server plugin, dependencies or build step. Installable from GitHub. Automatic writing defaults off. The live storage check runs inside ST through its existing authenticated session before writing is allowed. Joe confirmed he has done `her_world`; no live card inspection or changes were performed.

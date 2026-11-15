@@ -35,7 +35,7 @@ function frozenClock() {
   const p=req.url.split('?')[0];
   if(p==='/'){res.setHeader('Content-Type','text/html');res.end(html);return}
   if(mocks[p]){res.setHeader('Content-Type','text/javascript');res.end(mocks[p]);return}
-  if(p.startsWith('/scripts/extensions/third-party/ava-journal/')){const file=path.join(root,p.split('/').at(-1));if(fs.existsSync(file)){res.setHeader('Content-Type',p.endsWith('.css')?'text/css':'text/javascript');res.end(fs.readFileSync(file));return}}
+  if(p.startsWith('/scripts/extensions/third-party/ava-journal/')){const file=path.resolve(root,p.slice('/scripts/extensions/third-party/ava-journal/'.length));if(file.startsWith(root+path.sep)&&fs.existsSync(file)){res.setHeader('Content-Type',p.endsWith('.css')?'text/css':'text/javascript');res.end(fs.readFileSync(file));return}}
   if(p.startsWith('/user/files/')){if(files.has(p)){res.end(files.get(p));return}res.statusCode=404;res.end();return}
   let raw='';for await(const chunk of req)raw+=chunk;
   const data=raw?JSON.parse(raw):{};res.setHeader('Content-Type','application/json');
