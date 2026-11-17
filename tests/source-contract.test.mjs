@@ -52,3 +52,22 @@ test('ST exports the same per-message tokenizer used by its Chat Completion Mess
     assert.match(openai, /new TokenHandler\(countTokensOpenAIAsync\)/);
     assert.match(openai, /tokenHandler.countAsync\(\{ role: message.role, content: message.content \}\)/);
 });
+test('calendar adapter uses authenticated persistent root and the actual last HTTP boundary in ST 1.19', { skip: !root }, () => {
+    const openai = read('public/scripts/openai.js'), main = read('src/server-main.js'), loader = read('src/plugin-loader.js');
+    assert.match(openai, /await eventSource.emit\(event_types.CHAT_COMPLETION_SETTINGS_READY, generate_data\);\s+const generate_url = '\/api\/backends\/chat-completions\/generate';\s+const response = await fetch\(generate_url/);
+    assert.ok(main.indexOf('app.use(requireLoginMiddleware)') < main.indexOf('await loadPlugins('));
+    assert.ok(main.indexOf('app.use(csrfSyncProtection.csrfSynchronisedProtection)') < main.indexOf('await loadPlugins('));
+    assert.match(loader, /path.join\(path.dirname\(packageJsonPath\), packageJson.main\)/);
+    assert.match(read('src/users.js'), /profile: user,\s+directories: directories/);
+    assert.match(read('public/lib/eventemitter.js'), /catch \(err\) \{\s+console.error\(err\)/);
+});
+test('calendar tool uses the exported ST 1.19 registration API and visible follow-up calls', { skip: !root }, () => {
+    const tools = read('public/scripts/tool-calling.js'), script = read('public/script.js');
+    assert.match(tools, /export class ToolManager/);
+    assert.match(tools, /static registerFunctionTool\(\{ name, displayName, description, parameters, action, formatMessage, shouldRegister, stealth \}\)/);
+    assert.match(tools, /const register = await tool.shouldRegister\(\)/);
+    assert.match(tools, /return await this.#action\(parameters\)/);
+    assert.match(tools, /static isToolCallingSupported\(settings = null, model = null\)/);
+    assert.match(script, /await ToolManager.saveFunctionToolInvocations\(invocationResult.invocations\)/);
+    assert.match(script, /return Generate\('normal', \{ automatic_trigger/);
+});

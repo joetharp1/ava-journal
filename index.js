@@ -1,5 +1,8 @@
 import { NAME, DEFAULTS, migrateConfig, characterSettings, updateCharacterConfig, planCharacters, clone, localParts, recordKey, newDatabase, observe, readBack, newestFirst, markdown, uploadEntry, backoff } from './core.mjs';
 import { openStore, connectionId, holdSendState, captureContext, requestJournal, generateEntry, fileApi, checkStorage, registerSaved, telegramPing, saveSettingsVerified, recoverIndex } from './runtime.mjs';
+import { installArcBridge } from './arc/client.mjs';
+import { installCalendarControls } from './arc/controls.mjs';
+import { journalTurn, enqueueJournal, pendingJournal, finishJournalRequest, registerJournalTool } from './journal-tool.mjs';
 
 export async function boot() {
     const [host, ext, api, chats, users, utils, lib, tokenizers] = await Promise.all([
@@ -7,6 +10,7 @@ export async function boot() {
         import('../../../chats.js'), import('../../../user.js'), import('../../../utils.js'), import('../../../../lib.js'), import('../../../tokenizers.js'),
     ]);
     const profile = users.getCurrentUserHandle();
+    const arc = installArcBridge({ host, ext, yaml: lib.yaml });
     const namespace = `${NAME}:v1:${profile}`;
     const store = await openStore(namespace);
     let db = await store.read() || newDatabase();
@@ -15,6 +19,7 @@ export async function boot() {
     let generation = { type: '', automatic: false };
     let normalContext = null;
     let storageState = 'unchecked', storageError = '', storageTask = null;
+    let journalToolTask = null;
     const channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel(namespace) : null;
     const files = fileApi({ headers: host.getRequestHeaders });
     const active = () => {
@@ -49,14 +54,19 @@ export async function boot() {
             ext.extension_settings[NAME] = clone(config);
             syncControls();
             render();
+            if (Object.values(config.profiles).some(p => p.allowJournalTool)) void ensureJournalTool().catch(error => { status = error.message; render(); });
         }
         if (event.data?.kind === 'saved' && !running) void store.read().then(value => { if (value) db = value; render(); });
     };
 
     const panel = document.createElement('div'); panel.id = 'ava-journal-settings'; panel.className = 'extension_container';
-    panel.innerHTML = `<div class="inline-drawer"><div class="inline-drawer-toggle inline-drawer-header"><b>Journal · 0.2.0</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div>
+    panel.innerHTML = `<div class="inline-drawer"><div class="inline-drawer-toggle inline-drawer-header"><b>Journal · 0.3.0-alpha.3</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div>
       <div class="inline-drawer-content"><div class="aj-body">
       <label><input type="checkbox" id="aj-enabled"> Enable journal for this character</label>
+      <label><input type="checkbox" id="aj-atwill"> Allow journal requests during chats</label>
+      <small>The character can request an extra entry, including when you ask. It waits for the reply and any draft to finish. Requires provider tool calling; Write now remains available.</small>
+      <p id="aj-request-status" role="status" aria-live="polite"></p>
+      <div class="aj-buttons"><button type="button" class="menu_button" id="aj-request-retry" hidden>Retry requested entry</button><button type="button" class="menu_button" id="aj-request-cancel" hidden>Cancel requested entry</button></div>
       <div class="aj-buttons"><button type="button" class="menu_button" id="aj-storage">Check storage</button></div>
       <small id="aj-storage-status">Storage will be checked before writing. Uses a temporary test file, then removes it.</small>
       <p id="aj-character"></p><small id="aj-profiles"></small>
@@ -73,6 +83,8 @@ export async function boot() {
       <small>Also listed in Data Bank → Character, disabled for retrieval. VPS files are not a backup; download a copy weekly.</small>
       <ol id="aj-entries"></ol></div></div></div>`;
     (document.getElementById('extensions_settings') || document.getElementById('extensions_settings2') || document.body).append(panel);
+    installCalendarControls({ host, ext, panel, saveSettings: () => saveSettingsVerified(host),
+        loadTools: () => import('../../../tool-calling.js') });
     syncControls();
     panel.querySelector('#aj-path').textContent = `data/${profile}/user/files/`;
 
@@ -84,6 +96,15 @@ export async function boot() {
     function render() {
         const settings = selectedSettings();
         panel.querySelector('#aj-status').textContent = status;
+        const request = Object.values(db.journalRequests || {}).filter(r => r.avatar === settings.avatar).sort((a, b) => b.created - a.created)[0];
+        panel.querySelector('#aj-request-status').textContent = request ? request.status === 'saved' ? `Requested entry saved: ${request.name}`
+            : request.status === 'failed' ? `Requested entry failed: ${request.error || 'Retry when ready.'}`
+            : request.status === 'cancelled' ? 'Requested entry cancelled.'
+            : `Entry requested${request.focus ? ': ' + request.focus : ''}. Waiting for its recorded chat to be ready${settings.allowJournalTool ? '.' : ' and journal requests to be enabled.'}` : '';
+        panel.querySelector('#aj-request-retry').hidden = request?.status !== 'failed';
+        panel.querySelector('#aj-request-cancel').hidden = !['queued', 'failed'].includes(request?.status);
+        panel.querySelector('#aj-request-cancel').disabled = !!request && (db.pending?.entry?.journalRequestId === request.requestId || (attempt?.requestId === request.requestId && attempt.stage === 'saving'));
+        panel.querySelector('#aj-atwill').disabled = running || !settings.avatar;
         panel.querySelector('#aj-profiles').textContent = 'Enabled journals: ' + (Object.keys(config.profiles).filter(a => config.profiles[a].enabled).map(a => characterSettings(config, a).name).join(', ') || 'none');
         panel.querySelector('#aj-character').textContent = settings.avatar ? `Character: ${settings.name}` : 'Open a character’s chat to set up their journal.';
         panel.querySelector('#aj-write').disabled = running || !settings.avatar || !config.profiles[settings.avatar];
@@ -120,6 +141,7 @@ export async function boot() {
     function syncControls() {
         const settings = selectedSettings();
         panel.querySelector('#aj-enabled').checked = settings.enabled;
+        panel.querySelector('#aj-atwill').checked = settings.allowJournalTool;
         panel.querySelector('#aj-hold').checked = settings.sceneHold;
         panel.querySelector('#aj-telegram').checked = settings.telegram;
         panel.querySelector('#aj-zone').value = settings.timezone;
@@ -140,6 +162,72 @@ export async function boot() {
         try { await ensureStorage(true); status = 'Storage check passed. Journal is ready to enable.'; }
         catch (error) { status = error.message; }
         render();
+    };
+    function requestTarget() {
+        const a = active();
+        return a ? journalTurn({ avatar: a.avatar, chatId: a.chatId, messages: a.c.chat, timestamp: stamp }) : null;
+    }
+    const toolAllowed = () => generation.live && !running && !capturing && !generation.automatic
+        && ['normal', 'continue', 'swipe', 'regenerate'].includes(generation.type)
+        && selectedSettings().allowJournalTool;
+    async function ensureJournalTool() {
+        if (!journalToolTask) journalToolTask = import('../../../tool-calling.js').then(({ ToolManager }) => {
+            registerJournalTool({ manager: ToolManager, target: requestTarget, allowed: toolAllowed,
+                enqueue: async (ticket, focus) => {
+                    if (!navigator.locks?.request) throw new Error('Journal generation locking is unavailable.');
+                    return navigator.locks.request(namespace, { ifAvailable: true }, async lock => {
+                        if (!lock) throw new Error('Journal is busy in another tab; no request queued.');
+                        const guard = () => {
+                            if (!toolAllowed() || JSON.stringify(requestTarget()) !== JSON.stringify(ticket)) throw new Error('Conversation changed; no journal request queued.');
+                        };
+                        guard(); db = await store.read() || newDatabase(); guard();
+                        const settings = selectedSettings(), now = Date.now();
+                        const snapshot = normalContext?.avatar === ticket.avatar && normalContext.chatId === ticket.chatId && normalContext.requestId === ticket.requestId ? normalContext.snapshot : null;
+                        const request = enqueueJournal(db, { ...ticket, focus, created: now,
+                            date: localParts(now, settings.timezone).date, snapshot });
+                        await save(); status = request.status === 'saved' ? 'That requested entry is already saved.' : 'Journal request received. Waiting for the reply to finish.';
+                        render(); schedule(); return request;
+                    });
+                } });
+            return ToolManager;
+        }).catch(error => { journalToolTask = null; throw error; });
+        return journalToolTask;
+    }
+    panel.querySelector('#aj-atwill').onchange = async e => {
+        try {
+            const settings = selectedSettings();
+            if (!settings.avatar) throw new Error('Open this character’s one-to-one chat first.');
+            if (e.target.checked) {
+                if (!navigator.locks?.request) throw new Error('Journal generation locking is unavailable.');
+                await ensureStorage(storageState === 'failed'); await ensureJournalTool();
+            }
+            settings.allowJournalTool = e.target.checked; invalidate(); await saveConfig(settings);
+            const manager = e.target.checked ? await ensureJournalTool() : null;
+            status = !e.target.checked ? 'Journal requests are paused. Queued entries remain available to resume or cancel.'
+                : manager.isToolCallingSupported() ? 'Journal requests enabled. Provider tool support still needs a live check.'
+                : 'Requests enabled, but current API settings do not support tool calling. Write now is available.';
+            schedule();
+        } catch (error) { status = error.message; }
+        syncControls(); render();
+    };
+    async function changeRequestedEntry(cancel) {
+        const avatar = selectedSettings().avatar;
+        if (cancel && (attempt?.stage === 'saving' || db.pending?.entry?.journalRequestId)) throw new Error('An entry is already being saved. Finish or recover that save first.');
+        if (attempt?.requestId && cancel) { attempt.cancelRequested = true; invalidate(); return; }
+        if (!navigator.locks?.request) throw new Error('Journal generation locking is unavailable.');
+        await navigator.locks.request(namespace, { ifAvailable: true }, async lock => {
+            if (!lock) throw new Error('Journal is working. Try again when it finishes.');
+            db = await store.read() || newDatabase();
+            const r = Object.values(db.journalRequests || {}).find(r => r.avatar === avatar && ['queued', 'failed'].includes(r.status));
+            if (!r) return;
+            r.status = cancel ? 'cancelled' : 'queued'; r.retryAt = 0; delete r.error;
+            if (cancel) delete r.snapshot;
+            await save();
+        });
+        render(); schedule();
+    }
+    for (const [id, cancel] of [['aj-request-retry', false], ['aj-request-cancel', true]]) panel.querySelector('#' + id).onclick = async () => {
+        try { await changeRequestedEntry(cancel); } catch (error) { status = error.message; } render();
     };
     panel.querySelector('#aj-save-instruction').onclick = async () => {
         try {
@@ -238,6 +326,7 @@ export async function boot() {
         await save();
         await registerSaved({ settings: ext.extension_settings, entry: saved, text: pending.text, saveSettings: () => saveSettingsVerified(host), now: Date.now() });
         if (!db.entries.some(e => e.url === saved.url)) db.entries.push(saved);
+        finishJournalRequest(db, saved);
         db.pending = null; await save();
         status = `Saved ${saved.name}${saved.fallback ? ' · title taken from the first five body words' : ''}.`;
         if (settings.telegram) {
@@ -262,14 +351,19 @@ export async function boot() {
                 // Reload server-backed settings from this tab; journal never edits initiation state.
                 config = migrateConfig(ext.extension_settings[NAME] || config);
                 const settings = selectedSettings();
-                if (Object.values(config.profiles).some(p => p.enabled) || manual || db.pending) await ensureStorage();
-                for (const avatar of Object.keys(config.profiles)) if (await recoverIndex({ db, settings: ext.extension_settings, avatar, read: files.read, yaml: lib.yaml })) await save();
                 const a = active(), now = Date.now();
+                let queued = pendingJournal(db, a, settings.allowJournalTool, now);
+                if (Object.values(config.profiles).some(p => p.enabled) || manual || queued || db.pending) await ensureStorage();
+                for (const avatar of Object.keys(config.profiles)) if (await recoverIndex({ db, settings: ext.extension_settings, avatar, read: files.read, yaml: lib.yaml })) await save();
+                if (queued) {
+                    const saved = db.entries.find(e => e.journalRequestId === queued.requestId);
+                    if (saved) { finishJournalRequest(db, saved); await save(); queued = null; }
+                }
                 if (a?.avatar === settings.avatar) {
                     if (observe(db, { ...a, messages: a.c.chat, timezone: settings.timezone, now, timestamp: stamp })) await save();
                 }
-                if (draft() || busy()) { if (manual) status = 'Waiting: finish the draft or current generation, then press Write now.'; return; }
-                if (!Object.values(config.profiles).some(p => p.enabled) && !manual && !db.pending) return;
+                if (draft() || busy()) { if (queued) status = 'Requested entry is queued until this reply and draft finish.'; else if (manual) status = 'Waiting: finish the draft or current generation, then press Write now.'; return; }
+                if (!Object.values(config.profiles).some(p => p.enabled) && !manual && !queued && !db.pending) return;
                 // The existing initiation execution mutex coordinates provider access only.
                 // No initiation state, timers, budgets, prompts or backoff are read or written.
                 await navigator.locks.request(`ava-initiation:v1:${profile}`, { ifAvailable: true }, async otherLock => {
@@ -285,30 +379,32 @@ export async function boot() {
                     let timer, job;
                     try {
                         if (db.pending) { await completeSave(db.pending); return; }
-                        if (a?.avatar === settings.avatar) {
+                        if (!queued && a?.avatar === settings.avatar) {
                             const date = localParts(now, settings.timezone).date;
                             if (manual || settings.enabled) await prepareSnapshot(a, date, guard);
                             // Opening yesterday's untouched recorded chat can repair a missing snapshot.
                             for (const r of Object.values(db.records).filter(r => r.avatar === a.avatar && r.chatId === a.chatId && !r.snapshot && r.date !== date)) await prepareSnapshot(a, r.date, guard);
                         }
-                        job = planCharacters(db, config, now, manual, a, (snapshot, target) => snapshot && snapshot.avatar === target.avatar && snapshot.chatId === target.chatId && snapshot.connection === connectionId(ext.getContext(), api));
+                        job = queued ? { date: queued.date, avatar: queued.avatar, chatId: queued.chatId, type: 'requested', requestId: queued.requestId }
+                            : planCharacters(db, config, now, manual, a, (snapshot, target) => snapshot && snapshot.avatar === target.avatar && snapshot.chatId === target.chatId && snapshot.connection === connectionId(ext.getContext(), api));
                         const jobSettings = job ? characterSettings(config, job.avatar) : settings;
                         if (!job) { status = Object.values(config.profiles).some(p => p.enabled) ? 'Ready. Enabled journals wait for their saved conversation, matching connection and next opportunity.' : 'Automatic writing is off.'; return; }
-                        const record = db.records[recordKey(job.avatar, job.chatId, job.date)];
+                        const record = queued ? { snapshot: queued.snapshot } : db.records[recordKey(job.avatar, job.chatId, job.date)];
                         if (record?.snapshot && (record.snapshot.avatar !== job.avatar || record.snapshot.chatId !== job.chatId)) throw new Error('Saved journal context does not match its character and chat.');
                         if (!record?.snapshot) { status = `Journal waiting for its recorded chat (${job.date}). No context from another chat will be used.`; return; }
                         const previous = db.entries.filter(e => e.avatar === job.avatar && e.date <= job.date).sort(newestFirst)[0];
-                        attempt = { controller: new AbortController(), discard: false, stage: 'generation' };
+                        attempt = { controller: new AbortController(), discard: false, stage: 'generation', requestId: job.requestId };
                         timer = setTimeout(() => { if (attempt) { attempt.discard = true; attempt.controller.abort(); } }, 150000);
                         status = `Writing ${jobSettings.name} · ${job.date}${job.type === 'backfill' ? ' from its saved conversation' : ''}…`; render();
                         const parsed = await generateEntry({
-                            generate: () => requestJournal({ c: ext.getContext(), api, yaml: lib.yaml, countMessageTokens: tokenizers.countTokensOpenAIAsync, snapshot: record.snapshot, date: job.date, previous, instruction: jobSettings.instruction, signal: attempt.controller.signal, guard }),
+                            generate: () => requestJournal({ c: ext.getContext(), api, yaml: lib.yaml, countMessageTokens: tokenizers.countTokensOpenAIAsync, snapshot: record.snapshot, date: job.date, previous, instruction: jobSettings.instruction, request: queued, signal: attempt.controller.signal, guard,
+                                fetcher: arc.forTarget({ avatar: job.avatar, group: false, chatId: job.chatId }) }),
                             guard,
                             onRetry: () => { status = 'Entry missed the word count. Trying once more…'; render(); },
                         });
                         guard();
-                        const entry = { ...parsed, avatar: job.avatar, chatId: job.chatId, date: job.date, created: Date.now() };
-                        const text = markdown(entry, entry.created, jobSettings.timezone);
+                        const entry = { ...parsed, avatar: job.avatar, chatId: job.chatId, date: job.date, created: Date.now(), ...(job.requestId ? { journalRequestId: job.requestId } : {}) };
+                        const text = markdown(entry, entry.created, queued?.snapshot.timezone || jobSettings.timezone);
                         attempt.stage = 'saving'; clearTimeout(timer); render();
                         db.pending = { entry, text }; await save();
                         await completeSave(db.pending);
@@ -316,7 +412,14 @@ export async function boot() {
                         status = attempt?.discard || error?.name === 'AbortError'
                             ? 'Journal generation discarded. A later opportunity can try again.'
                             : error.message || 'Journal failed. Nothing overwritten.';
-                        const r = job && db.records[recordKey(job.avatar, job.chatId, job.date)];
+                        const request = job?.requestId && db.journalRequests?.[job.requestId];
+                        if (request && request.status !== 'saved') {
+                            request.status = attempt?.cancelRequested ? 'cancelled' : revision !== startRevision ? 'queued' : 'failed';
+                            request.error = error.message; request.retryAt = Date.now() + 2000;
+                            if (request.status === 'cancelled') delete request.snapshot;
+                            await save();
+                        }
+                        const r = !job?.requestId && job && db.records[recordKey(job.avatar, job.chatId, job.date)];
                         if (r) { backoff(r, Date.now()); await save(); }
                     } finally {
                         clearTimeout(timer); attempt = null; capturing = false;
@@ -335,19 +438,20 @@ export async function boot() {
     }
     host.eventSource.on(host.event_types.GENERATION_STARTED, (type, options, dryRun) => {
         if (dryRun) return;
-        invalidate(); generation = { type, automatic: !!options?.automatic_trigger };
+        invalidate(); generation = { type, automatic: !!options?.automatic_trigger, live: true };
     });
-    host.eventSource.on(host.event_types.GENERATION_ENDED, schedule);
-    host.eventSource.on(host.event_types.GENERATION_STOPPED, () => { invalidate(); schedule(); });
+    host.eventSource.on(host.event_types.GENERATION_ENDED, () => { generation.live = false; schedule(); });
+    host.eventSource.on(host.event_types.GENERATION_STOPPED, () => { generation.live = false; invalidate(); schedule(); });
     host.eventSource.makeLast(host.event_types.CHAT_COMPLETION_SETTINGS_READY, async data => {
         const settings = selectedSettings();
-        if (running || generation.automatic || !['normal', undefined].includes(generation.type) || !settings.enabled) return;
+        if (running || generation.automatic || !['normal', 'continue', 'swipe', 'regenerate', undefined].includes(generation.type) || (!settings.enabled && !settings.allowJournalTool)) return;
         const a = active(); if (a?.avatar !== settings.avatar || !Array.isArray(data.messages)) return;
         const last = [...a.c.chat].reverse().find(m => !m.is_system);
         if (!last) return;
         const date = localParts(stamp(last.send_date), settings.timezone).date;
         normalContext = {
             avatar: a.avatar, chatId: a.chatId, length: a.c.chat.length,
+            requestId: requestTarget()?.requestId,
             prefix: JSON.stringify(a.c.chat.map(m => [m.is_user, m.mes, m.send_date])),
             snapshot: { messages: clone(data.messages), date, avatar: a.avatar, chatId: a.chatId, user: a.c.name1, character: a.c.name2, timezone: settings.timezone, connection: connectionId(a.c, api) },
         };
@@ -375,6 +479,9 @@ export async function boot() {
     document.addEventListener('visibilitychange', () => { if (!document.hidden) schedule(); });
     window.addEventListener('pageshow', schedule);
     setInterval(() => void tick(), 30000);
+    if (Object.values(config.profiles).some(p => p.allowJournalTool)) {
+        try { await ensureJournalTool(); } catch (error) { status = `Journal tool unavailable: ${error.message}`; }
+    }
     render(); schedule();
     return { tick, snapshot: () => clone(db), panel };
 }

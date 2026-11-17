@@ -8,6 +8,6 @@
   "js": "index.js",
   "css": "style.css",
   "author": "joetharp1",
-  "version": "0.2.0",
+  "version": "0.3.0-alpha.3",
   "homePage": "https://github.com/joetharp1/ava-journal"
 }

@@ -1,3 +1,13 @@
+# Ava calendar and journal requests — review build 0.3.0-alpha.3
+
+Ava can now request an extra journal entry during ordinary chat, including when Joe asks. The opt-in tool queues the existing writer, preserves request-time context and waits for the reply/draft to finish. It works independently of the calendar server plugin. See [JOURNAL-REQUESTS.md](JOURNAL-REQUESTS.md) for behavior, limits and acceptance checks.
+
+The optional Ava calendar includes persistent state, date anchors, request-time injection, setup/override controls, encounter completion and automatic birth catch-up. It is inactive by default and needs both the UI update and a separate server-plugin installation; subsequent server updates require a restart. See [arc/README.md](arc/README.md) and [arc/VALIDATION.md](arc/VALIDATION.md).
+
+Neither feature has been activated on the VPS. This branch remains a review build pending mobile/ST/Venice acceptance. The documentation below describes the existing journal-only release.
+
+---
+
 # Character Journals 0.2.0
 
 Built for SillyTavern 1.19.0 Chat Completion mode. Separate client extension; no server plugin, dependencies or build step. Installable from GitHub. Automatic writing defaults off. The live storage check runs inside ST through its existing authenticated session before writing is allowed. Joe confirmed he has done `her_world`; no live card inspection or changes were performed.
