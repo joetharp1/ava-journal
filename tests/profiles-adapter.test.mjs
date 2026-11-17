@@ -45,6 +45,7 @@ async function harness() {
         '../../../utils.js': { timestampToMoment: v => ({ valueOf: () => v }) }, '../../../../lib.js': { yaml: {} },
         '../../../tokenizers.js': { countTokensOpenAIAsync: async () => 1 }, './core.mjs': core,
         './arc/client.mjs': { installArcBridge: () => ({ forTarget: () => undefined }) },
+        './arc/controls.mjs': { installCalendarControls: () => ({}) },
         './runtime.mjs': { ...runtime,
             openStore: async () => ({ read: async () => structuredClone(stored), write: async data => { stored = structuredClone(data); } }),
             checkStorage: async () => {}, recoverIndex: async () => false,

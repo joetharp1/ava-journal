@@ -1,6 +1,7 @@
 import { NAME, DEFAULTS, migrateConfig, characterSettings, updateCharacterConfig, planCharacters, clone, localParts, recordKey, newDatabase, observe, readBack, newestFirst, markdown, uploadEntry, backoff } from './core.mjs';
 import { openStore, connectionId, holdSendState, captureContext, requestJournal, generateEntry, fileApi, checkStorage, registerSaved, telegramPing, saveSettingsVerified, recoverIndex } from './runtime.mjs';
 import { installArcBridge } from './arc/client.mjs';
+import { installCalendarControls } from './arc/controls.mjs';
 
 export async function boot() {
     const [host, ext, api, chats, users, utils, lib, tokenizers] = await Promise.all([
@@ -56,7 +57,7 @@ export async function boot() {
     };
 
     const panel = document.createElement('div'); panel.id = 'ava-journal-settings'; panel.className = 'extension_container';
-    panel.innerHTML = `<div class="inline-drawer"><div class="inline-drawer-toggle inline-drawer-header"><b>Journal · 0.3.0-alpha.1</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div>
+    panel.innerHTML = `<div class="inline-drawer"><div class="inline-drawer-toggle inline-drawer-header"><b>Journal · 0.3.0-alpha.2</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div>
       <div class="inline-drawer-content"><div class="aj-body">
       <label><input type="checkbox" id="aj-enabled"> Enable journal for this character</label>
       <div class="aj-buttons"><button type="button" class="menu_button" id="aj-storage">Check storage</button></div>
@@ -75,6 +76,8 @@ export async function boot() {
       <small>Also listed in Data Bank → Character, disabled for retrieval. VPS files are not a backup; download a copy weekly.</small>
       <ol id="aj-entries"></ol></div></div></div>`;
     (document.getElementById('extensions_settings') || document.getElementById('extensions_settings2') || document.body).append(panel);
+    installCalendarControls({ host, ext, panel, saveSettings: () => saveSettingsVerified(host),
+        loadTools: () => import('../../../tool-calling.js') });
     syncControls();
     panel.querySelector('#aj-path').textContent = `data/${profile}/user/files/`;
 

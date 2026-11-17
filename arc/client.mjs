@@ -14,6 +14,13 @@ export function createArcBridge({ fetcher, headers, binding, target, yaml, baseU
         const recipient = explicitTarget === undefined ? target() : explicitTarget;
         const identity = recipient ? JSON.stringify(recipient) : '';
         const isAva = recipient?.avatar === owner.avatar && !recipient.group;
+        // Private journals never execute encounter tools. Also strip a stale tool
+        // definition from a snapshot belonging to another character.
+        if ((!isAva || explicitTarget !== undefined) && Array.isArray(data.tools)) {
+            data.tools = data.tools.filter(t => t.function?.name !== 'ava_append_arc_event');
+            if (!data.tools.length) { delete data.tools; delete data.tool_choice; }
+            else if (data.tool_choice?.function?.name === 'ava_append_arc_event') data.tool_choice = 'auto';
+        }
         if (!Array.isArray(data.messages)) {
             if (isAva) throw new ArcError('Calendar requires Chat Completion messages.');
             return fetcher(input, options);

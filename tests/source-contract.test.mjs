@@ -61,3 +61,13 @@ test('calendar adapter uses authenticated persistent root and the actual last HT
     assert.match(read('src/users.js'), /profile: user,\s+directories: directories/);
     assert.match(read('public/lib/eventemitter.js'), /catch \(err\) \{\s+console.error\(err\)/);
 });
+test('calendar tool uses the exported ST 1.19 registration API and visible follow-up calls', { skip: !root }, () => {
+    const tools = read('public/scripts/tool-calling.js'), script = read('public/script.js');
+    assert.match(tools, /export class ToolManager/);
+    assert.match(tools, /static registerFunctionTool\(\{ name, displayName, description, parameters, action, formatMessage, shouldRegister, stealth \}\)/);
+    assert.match(tools, /const register = await tool.shouldRegister\(\)/);
+    assert.match(tools, /return await this.#action\(parameters\)/);
+    assert.match(tools, /static isToolCallingSupported\(settings = null, model = null\)/);
+    assert.match(script, /await ToolManager.saveFunctionToolInvocations\(invocationResult.invocations\)/);
+    assert.match(script, /return Generate\('normal', \{ automatic_trigger/);
+});

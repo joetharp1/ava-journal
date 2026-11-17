@@ -1,21 +1,25 @@
-# Ava calendar foundation — 0.3.0-alpha.1
+# Ava calendar — review build 0.3.0-alpha.2
 
-Build date: 15 November 2026. Review branch; not a live deployment.
+Build date: 16 November 2026. Review branch; not a live deployment.
 
 ## Scope completed
 
-This adds the first requested layer to the existing journal repository: an opt-in,
-Ava-only record, civil-date derivation, anchored manual overrides, request-boundary
-injection and transactional event receipt primitives. It does not activate an
-automatic birth scheduler, register a model event tool, change the journal's
-daily schedule, or add a second daily entry. The accepted probability array is
-stored as a constant for the next layer; no unattended random calls occur.
+This extends the requested foundation with journal-panel setup/override controls,
+a trusted encounter coordinator, one narrow registered model tool, and automatic
+birth catch-up. It remains inactive by default and is not deployed to the VPS.
+The existing journal schedule and second-entry policy are unchanged.
 
-The journal UI extension remains the client host. A separate lightweight server
-entry point in this same repository owns calendar storage. It does not generate
-text, install packages or run a timer. `package.json.main` points to
-`arc/server.mjs` for the SillyTavern server-plugin loader; `manifest.json.js`
-continues to point to the existing browser entry point.
+There are two installations from this repository: the existing UI extension and a
+small server plugin. `manifest.json.js` is `index.js`; `package.json.main` is
+`arc/server.mjs`. No npm dependencies or build step are required. Updating the UI
+extension alone does not install or update the server copy; server code updates
+require a deliberate matching update and container restart.
+
+The server owns the clock and records; it never calls Venice or sends messages.
+It evaluates due dates on access. The bound Ava client checks on tab return,
+focus, a visible-tab 60-second timer, and immediately before model requests.
+With the browser closed there is no notification/narration job: the next request
+processes elapsed dates and obtains the same historical transition date.
 
 ## Authority and persistence
 
@@ -69,8 +73,8 @@ These are the supplied character/story rules, not medical guidance.
   term pools use the supplied words; Braxton Hicks enters the pool at day 210.
 - Birth-day probabilities, day 273 through 287: 5, 7, 10, 13, 17, 22, 28, 35,
   43, 52, 62, 72, 82, 92, 100 percent. When processing a day-287-or-later event,
-  birth is forced without calling the decision callback. The automatic sequence
-  runner is deferred, so simply deriving state does not run these events yet.
+  birth is forced without calling the decision callback. The sequence runner processes these events before returning current state;
+  pure `derive()` remains free of writes and random calls.
 - Mathematical correction: interpreted as conditional daily hazards, this exact
   curve has median day 278. Survival to day 287 is 0.0000878632, or about
   0.00878632%. The supplied percentages are retained unchanged.
@@ -90,29 +94,48 @@ These are the supplied character/story rules, not medical guidance.
 
 ## Duplicate protection and pruning
 
-`recordEncounter` and `recordDaily` are trusted coordinator functions, not model
-tools or HTTP routes. Invoke them inside `store.transaction`.
+`recordEncounter` and `recordDaily` remain internal functions invoked inside
+`store.transaction`. The append-event route exposes only a validated completion
+against a server-issued encounter, never a raw state update.
 
-An encounter must have a canonical ID and monotonic sequence assigned once by the
-future trusted encounter coordinator. Regenerations/retries must reuse both. The
-model must never assign or replace either. Present receipts are returned without
-rolling, even after a phase transition. A mismatched ID/sequence/date is rejected.
+Joe presses **Begin new encounter** once in Ava's one-to-one chat. This revision-
+checked operation assigns a server UUID and monotonic sequence, bound to that
+chat and local date. This explicit control is required: neither the model nor
+text similarity determines where one encounter ends and another starts. It is
+available only during cycle days 10–16. A new click deliberately supersedes the
+previous encounter; stale revision conflicts require refresh.
 
-Keep encounters for fewer than 30 elapsed local dates and at most 50 receipts,
-whichever limit removes them first. Preserve the scalar sequence high-water mark.
-Once pruned, the old result is unavailable: reject its old sequence instead of
-rerolling it. Delayed/out-of-order events below that mark also fail closed. This
-is the deliberate bounded-storage tradeoff; do not promise infinite replay of a
-result after deleting it. New encounters must be recorded on their local date.
-Future tool work must authenticate encounter provenance and preserve stable
-identity; the primitive alone cannot identify two descriptions of the same scene.
+The single `ava_append_arc_event` tool accepts exactly three boolean facts. It
+cannot supply an ID, start another encounter, alter overrides, or write a journal.
+The client captures the open ID during tool registration, validates chat identity
+again on execution, and the server checks ID/chat/date/phase. The tool is offered
+only for a current, open Ava encounter in ordinary generation, never quiet,
+impersonation, automatic initiation or private journal requests. Ava reports
+completion; the server determines eligibility and outcome. A manual completion
+form uses the same route for providers without verified tool support.
 
-Daily birth receipts use [arc ID, kind, local date]. Receipt and transition are
-saved atomically. The catch-up utility returns at most 60 chronological dates and
-a next-date cursor; it never jumps forward past the cap. The next layer must
-process missed eligible dates in order, stop at first success, persist its cursor,
-and derive postpartum from that historical success date. It must finish required
-catch-up before sending state to a model. Journal backfill is separate.
+An ineligible completion creates no result. An eligible completion records once;
+repeated calls reuse the receipt even after conception. Reopening ST cannot
+mint another identity. The scene facts themselves are model-reported or manually
+entered; this is not an independent semantic verifier of the conversation.
+
+Keep receipts for fewer than 30 elapsed local dates and at most 50 receipts,
+whichever removes them first. Preserve sequence high-water/issued scalars. Clear
+expired active-encounter metadata at 30 days. Once a result is pruned, reject its
+old sequence/token instead of rerolling. Superseded tokens also fail closed. This
+is the bounded-storage tradeoff; infinite replay of deleted results is not claimed.
+
+Daily birth receipts use [arc ID, kind, local date]. Receipt, cursor and transition
+are saved atomically. The runner processes missed eligible dates in chronological
+order, stops at first success and derives postpartum from that historical date.
+The date batch is capped at 60; forced birth on day 287 bounds the actual pregnancy
+window to 15 dates. A complete required catch-up precedes model dispatch.
+
+A clock override resets the cursor's clock identity, while existing daily receipts
+still prevent same-date rerolls. A manual jump applies from its anchor date; it
+does not invent births earlier than that date. If a same-day failed roll is then
+manually advanced to day 287+, preserve the failed roll and separately record the
+forced birth transition without another random call. Journal backfill is separate.
 
 ## Request-time integration
 
@@ -143,32 +166,47 @@ yet. Requests sent by extensions that capture a private fetch before this wrappe
 or use a different transport/endpoint, require their own adapter and acceptance
 test; no blanket support for uninspected transports is claimed.
 
-## Activation and next layer
+## Controls and activation
 
-No live settings, server files, installations, restarts, model calls or Telegram
-messages were performed. Development is on a review branch, not the Update path.
+**Journal → Ava’s calendar** contains Check server / refresh; explicit Ava
+confirmation; initial arc/date/timezone; reconnect; current state; anchored day,
+stage and belly overrides; Clear overrides; encounter controls; and JSON record
+download. Start date means cycle day 1, conception day 0, or birth day 0.
 
-This foundation intentionally has no user-facing calendar setup panel yet. After
-review and a backup/isolated deployment, a setup panel can call authenticated
-`/api/plugins/ava-calendar/configure` with explicit Ava binding, timezone and start
-date; then save the client binding `extension_settings['ava-calendar']={avatar}`.
-Do not enable a client binding before the server is installed and configured.
-The server exposes state/inspect and revision-checked manual override routes;
-it exposes no general arbitrary-write route and no model event route.
+No settings, server files, installations, restarts, model calls or Telegram
+messages were performed on Joe's VPS. Main remains unchanged. Do not install the
+review branch directly into a live deployment before isolated acceptance testing.
 
-Next: setup/override controls, trusted encounter identity/eligibility tool, the
-birth curve runner with ordered 60-date catch-up, then isolated end-to-end tests
-and activation. Extra daily journal entries remain a separate later task.
+The first installation needs a server-plugin copy in the persistent plugins mount,
+`enableServerPlugins: true`, and one clean container restart. Pin both client and
+server to the reviewed commit. Check `enableServerPluginsAutoUpdate` explicitly:
+ST 1.19 defaults it to true, so disable automatic server-plugin updates for the
+pinned deployment. Do not pull the `latest` container image, recreate/delete
+volumes, or run `docker compose down -v` as part of this work.
+
+Follow the isolated procedure in [VALIDATION.md](VALIDATION.md). A fresh backup and
+restore check must precede deployment. The real avatar ID and starting date are
+chosen by Joe in the controls, never inferred from a display name. A saved server
+record can be reconnected after a failed client settings save; setup cannot
+replace an existing record. No reset/delete/import route is exposed.
+
+Remaining work: live browser/mobile layout acceptance, authenticated ST 1.19
+integration, and Venice tool-call acceptance. Then the reviewed install/update,
+restart and explicit configuration. Future background initiation must use this
+same server state service before its own requests; that worker is separate. A
+second daily journal entry remains a separate job.
 
 ## Verification
 
 Run `ST_SOURCE=/path/to/pinned/ST-1.19.0 npm test` with commit
-`7e8663cd9c184a550b37238218bdd32c6efc68e9`. Tests cover the actual file transaction,
-restart/replay, two independent store instances, rollback on failed rename,
-revision conflicts, route authorization, local-date boundaries, overrides,
-postpartum day 93, pruning, adapter isolation/failures, and the actual private
-journal request path. Existing journal tests and Danny's byte-exact fixtures pass.
+`7e8663cd9c184a550b37238218bdd32c6efc68e9`. Tests cover actual file transactions,
+restart/replay, two store instances, failed rename, revision conflicts, account
+isolation, local dates, overrides, postpartum day 93, pruning, request injection,
+private journals, chronological birth catch-up, forced day 287, encounter tools,
+setup/reconnect, manual controls and tab-return behavior. Existing journal tests
+and Danny's byte-exact fixtures pass.
 
-Chromium browser harness was attempted but this environment rejected Chromium's
-socket creation (`Operation not permitted`) before any page could run. Simulated
-browser/HTTP adapter tests are not a successful live ST/Venice validation.
+The controls tests execute real callbacks/routes with a minimal DOM adapter;
+they are behavioral tests, not rendered-layout validation. Chromium was attempted
+again but socket creation was denied (`Operation not permitted`) before any page
+ran. No live ST/Venice integration success is claimed.

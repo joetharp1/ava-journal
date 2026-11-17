@@ -11,5 +11,10 @@
 #ava-journal-settings button[hidden] { display: none; }
 #ava-journal-settings #aj-entries { padding-left: 24px; margin: 0; }
 #ava-journal-settings #aj-entries li { margin: 7px 0; }
+#ava-calendar-controls { border-top: 1px solid #777; padding-top: 10px; }
+#ava-calendar-controls .aj-body { max-height: none; overflow: visible; }
+#ava-calendar-controls [hidden] { display: none !important; }
+#ava-calendar-controls input:not([type=checkbox]), #ava-calendar-controls select { width: 100%; min-width: 0; padding: 8px; }
+#ava-calendar-controls summary { cursor: pointer; padding: 8px 0; }
 
 #ava-journal-settings textarea { width:100%; max-width:100%; resize:vertical; min-height:160px; background:#25282d; color:#f2f2f2; -webkit-text-fill-color:#f2f2f2; padding:8px; border:1px solid #777; font:inherit; }

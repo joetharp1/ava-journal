@@ -48,6 +48,13 @@ export function validateRecord(r) {
     if (r.birthDate !== null) dayIndex(r.birthDate);
     check(Array.isArray(r.encounters) && r.encounters.length <= 50 && Number.isSafeInteger(r.encounterHighWater) && r.encounterHighWater >= 0, 'Invalid encounter ledger.');
     check(r.daily && typeof r.daily === 'object' && !Array.isArray(r.daily), 'Invalid daily ledger.');
+    if (r.encounterIssued !== undefined) check(Number.isSafeInteger(r.encounterIssued) && r.encounterIssued >= r.encounterHighWater, 'Invalid issued encounter sequence.');
+    if (r.activeEncounter) {
+        const e = r.activeEncounter;
+        check(typeof e.id === 'string' && typeof e.chatId === 'string' && typeof e.arcId === 'string' && Number.isSafeInteger(e.sequence) && e.sequence > 0, 'Invalid active encounter.');
+        dayIndex(e.date);
+    }
+    if (r.birthCursor) { check(typeof r.birthCursor.clock === 'string', 'Invalid birth cursor.'); dayIndex(r.birthCursor.nextDate); }
     if (r.override) {
         const o = r.override;
         check(['day', 'stage', 'birth'].includes(o.kind) && typeof o.arcId === 'string' && ['cycle', 'pregnancy', 'postpartum'].includes(o.arcType), 'Invalid override.');
@@ -116,6 +123,7 @@ export function pruneEncounters(record, today) {
 export function normalizeRecord(record, today) {
     validateRecord(record);
     pruneEncounters(record, today);
+    if (record.activeEncounter && daysBetween(record.activeEncounter.date, today) >= 30) record.activeEncounter = null;
     if (record.arcType === 'postpartum') {
         const anchor = effectiveAnchor(record);
         if (daysBetween(anchor, today) >= 84) {

@@ -1,6 +1,8 @@
-# Calendar foundation — review build 0.3.0-alpha.1
+# Ava calendar — review build 0.3.0-alpha.2
 
-The requested Ava-only state, date anchors, request-time injection and server-backed duplicate protection are implemented on a development branch. The calendar is inactive by default; the birth scheduler, event tool and setup panel are not active or installed. See [arc/README.md](arc/README.md) for the accepted specification, implementation, validation and remaining activation work.
+The Ava-only calendar now includes persistent state, date anchors, request-time injection, setup/override controls, encounter completion and automatic birth catch-up. It is inactive by default and has not been installed on the VPS. It requires the journal UI update **and a separate server-plugin installation** from this repository; later server code updates require a restart. See [arc/README.md](arc/README.md) and the [isolated acceptance procedure](arc/VALIDATION.md).
+
+The documentation below describes the existing journal-only release. Its “no server plugin” statement applies to journals alone, not the optional calendar.
 
 ---
 
