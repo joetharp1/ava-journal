@@ -1,8 +1,10 @@
-# Ava calendar — review build 0.3.0-alpha.2
+# Ava calendar and journal requests — review build 0.3.0-alpha.3
 
-The Ava-only calendar now includes persistent state, date anchors, request-time injection, setup/override controls, encounter completion and automatic birth catch-up. It is inactive by default and has not been installed on the VPS. It requires the journal UI update **and a separate server-plugin installation** from this repository; later server code updates require a restart. See [arc/README.md](arc/README.md) and the [isolated acceptance procedure](arc/VALIDATION.md).
+Ava can now request an extra journal entry during ordinary chat, including when Joe asks. The opt-in tool queues the existing writer, preserves request-time context and waits for the reply/draft to finish. It works independently of the calendar server plugin. See [JOURNAL-REQUESTS.md](JOURNAL-REQUESTS.md) for behavior, limits and acceptance checks.
 
-The documentation below describes the existing journal-only release. Its “no server plugin” statement applies to journals alone, not the optional calendar.
+The optional Ava calendar includes persistent state, date anchors, request-time injection, setup/override controls, encounter completion and automatic birth catch-up. It is inactive by default and needs both the UI update and a separate server-plugin installation; subsequent server updates require a restart. See [arc/README.md](arc/README.md) and [arc/VALIDATION.md](arc/VALIDATION.md).
+
+Neither feature has been activated on the VPS. This branch remains a review build pending mobile/ST/Venice acceptance. The documentation below describes the existing journal-only release.
 
 ---
 

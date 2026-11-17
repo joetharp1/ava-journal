@@ -97,7 +97,7 @@ export async function generateEntry({ generate, guard, onRetry = () => {} }) {
     }
 }
 
-export async function requestJournal({ c, api, yaml, countMessageTokens, snapshot, date, previous, instruction, signal, guard, fetcher = fetch }) {
+export async function requestJournal({ c, api, yaml, countMessageTokens, snapshot, date, previous, instruction, request = null, signal, guard, fetcher = fetch }) {
     if (c.mainApi !== 'openai') throw new Error('Journal needs ST Chat Completion mode.');
     if (snapshot.connection !== connectionId(c, api)) throw new Error('Select the connection used by this character’s conversation before writing its journal.');
     const settings = clone(c.chatCompletionSettings);
@@ -106,9 +106,10 @@ export async function requestJournal({ c, api, yaml, countMessageTokens, snapsho
     settings.temp_openai = 0.95;
     settings.openai_max_tokens = 1600;
     settings.n = 1;
+    settings.function_calling = false;
     const contextLimit = Number(settings.openai_max_context), budget = contextLimit - 2200;
     if (!Number.isFinite(budget) || budget < 1000) throw new Error(`Journal needs at least 3200 context tokens; this connection reports ${settings.openai_max_context ?? 'no limit'}. 2200 tokens are reserved for output and request overhead.`);
-    const messages = await fitContext(journalMessages(snapshot, date, previous, instruction), countMessageTokens, budget);
+    const messages = await fitContext(journalMessages(snapshot, date, previous, instruction, request), countMessageTokens, budget);
     guard();
     const { generate_data: data } = await api.createGenerationParameters(settings, api.getChatCompletionModel(settings), 'quiet', messages);
     // The CUSTOM backend applies YAML after standard fields. Preserve unrelated
@@ -228,7 +229,8 @@ export async function recoverIndex({ db, settings, avatar, read, yaml }) {
         const sentences = body.match(/[^.!?]+(?:[.!?]+["'”’]?|$)/g)?.map(x => x.trim()).filter(Boolean) || [];
         const beat = sentences.slice(-2).join(' ');
         if (!beat || beat.length > 900) continue;
-        db.entries.push({ name: attachment.url.split('/').at(-1), url: attachment.url, avatar, chatId: meta.chat_id, date: meta.date, title: meta.title, body, beat, created: Date.parse(meta.written_at) });
+        db.entries.push({ name: attachment.url.split('/').at(-1), url: attachment.url, avatar, chatId: meta.chat_id, date: meta.date, title: meta.title, body, beat, created: Date.parse(meta.written_at),
+            ...(typeof meta.journal_request_id === 'string' && meta.journal_request_id.length <= 2000 ? { journalRequestId: meta.journal_request_id } : {}) });
         changed = true;
     }
     return changed;

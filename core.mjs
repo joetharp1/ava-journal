@@ -3,7 +3,7 @@ import { JOURNAL_INSTRUCTION, READ_BACK, CHARACTER_JOURNAL_INSTRUCTION, CHARACTE
 export const NAME = 'ava-journal';
 export const FILE_PREFIX = '/user/files/';
 export const MINUTE = 60_000;
-export const DEFAULTS = Object.freeze({ enabled: false, avatar: '', timezone: 'Europe/London', sceneHold: false, telegram: false });
+export const DEFAULTS = Object.freeze({ enabled: false, avatar: '', timezone: 'Europe/London', sceneHold: false, telegram: false, allowJournalTool: false });
 export const clone = value => structuredClone(value);
 export function migrateConfig(value = {}) {
     if (value?.version === 2 && value.profiles) return clone(value);
@@ -128,18 +128,19 @@ export function readBack(entries, avatar, template = READ_BACK, name = '') {
     // Substitution callbacks prevent $&, $', etc. in model text being interpreted.
     return template.replaceAll('{{char}}', () => name || avatar.replace(/\.png$/i, '')).replace('[titles]', () => recent.map(e => e.title).join(' | ')).replace('[beat]', () => recent[0].beat);
 }
-export function journalMessages(snapshot, date, previous, instruction = JOURNAL_INSTRUCTION) {
+export function journalMessages(snapshot, date, previous, instruction = JOURNAL_INSTRUCTION, request = null) {
     if (!snapshot || !Array.isArray(snapshot.messages) || !snapshot.messages.length) throw new Error('The recorded conversation has no saved context yet. Open that character’s chat once to prepare it.');
     if (previous && previous.avatar !== snapshot.avatar) throw new Error('Previous journal belongs to a different character.');
     const messages = clone(snapshot.messages);
     // These JSON keys are data labels, not additional authored instructions.
-    messages.push({ role: 'system', content: JSON.stringify({ journal_date: date, timezone: snapshot.timezone, previous_journal: previous ? { date: previous.date, title: previous.title, body: previous.body } : null }) });
+    messages.push({ role: 'system', content: JSON.stringify({ journal_date: date, timezone: snapshot.timezone, previous_journal: previous ? { date: previous.date, title: previous.title, body: previous.body } : null,
+        ...(request ? { requested_journal: { focus: request.focus || '', requested_at: request.created } } : {}) }) });
     messages.push({ role: 'user', content: instruction.replaceAll('{{user}}', () => snapshot.user).replaceAll('{{char}}', () => snapshot.character) });
     return messages;
 }
 export function markdown(entry, now, timezone) {
     const time = new Intl.DateTimeFormat('en-GB', { timeZone: timezone, hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23', timeZoneName: 'longOffset' }).format(new Date(now));
-    return `---\ndate: ${entry.date}\ntime: ${JSON.stringify(time)}\ntimezone: ${JSON.stringify(timezone)}\ntitle: ${JSON.stringify(entry.title)}\navatar: ${JSON.stringify(entry.avatar)}\nchat_id: ${JSON.stringify(entry.chatId)}\nwritten_at: ${JSON.stringify(new Date(now).toISOString())}\n---\n\n${entry.body}\n`;
+    return `---\ndate: ${entry.date}\ntime: ${JSON.stringify(time)}\ntimezone: ${JSON.stringify(timezone)}\ntitle: ${JSON.stringify(entry.title)}\navatar: ${JSON.stringify(entry.avatar)}\nchat_id: ${JSON.stringify(entry.chatId)}\nwritten_at: ${JSON.stringify(new Date(now).toISOString())}\n${entry.journalRequestId ? `journal_request_id: ${JSON.stringify(entry.journalRequestId)}\n` : ''}---\n\n${entry.body}\n`;
 }
 export function registerAttachment(settings, entry, size, now) {
     settings.character_attachments ||= {};

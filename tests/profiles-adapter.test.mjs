@@ -4,9 +4,10 @@ import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 import * as core from '../core.mjs';
 import * as runtime from '../runtime.mjs';
+import * as journalTool from '../journal-tool.mjs';
 import { JOURNAL_INSTRUCTION } from '../content.mjs';
 
-async function harness() {
+async function harness(seed = {}) {
     const nodes = new Map();
     class Element {
         constructor() { this.children = []; this.value = ''; this.checked = false; this.textContent = ''; }
@@ -30,9 +31,10 @@ async function harness() {
     const ctx = { mainApi: 'openai', characterId: 0, characters: [{ avatar: 'Ava.png' }], chatId: 'ava-chat', name1: 'Joe', name2: 'Ava', chat: [], chatCompletionSettings: { chat_completion_source: 'custom', custom_url: 'fixture', openai_max_context: 16000 } };
     const messages = name => Array.from({ length: 8 }, (_, i) => ({ mes: `${name} private message ${i}`, is_user: i % 2 === 0, send_date: time - 10000 + i }));
     ctx.chat = messages('Ava');
-    const extension_settings = { 'ava-journal': { avatar: 'Ava.png', enabled: true, timezone: 'Europe/London', sceneHold: false, telegram: false } };
-    let stored = core.newDatabase(), serverConfig, busy = false, failSave = false;
-    const savedFiles = new Map(), requests = [], heldLocks = new Set();
+    const extension_settings = structuredClone(seed.settings || { 'ava-journal': { avatar: 'Ava.png', enabled: true, timezone: 'Europe/London', sceneHold: false, telegram: false } });
+    let stored = structuredClone(seed.db || core.newDatabase()), serverConfig, busy = false, failSave = false;
+    const savedFiles = new Map(), requests = [], requestDetails = [], heldLocks = new Set(), tools = new Map();
+    let generationHook = null;
     const host = { eventSource: events, event_types: Object.fromEntries(names.map(n => [n, n])),
         isGenerating: () => busy, setSendButtonState: v => { busy = v; }, getRequestHeaders: () => ({}),
         async saveSettings() { if (!failSave) { serverConfig = structuredClone(extension_settings); await events.emit('SETTINGS_UPDATED'); } },
@@ -46,11 +48,13 @@ async function harness() {
         '../../../tokenizers.js': { countTokensOpenAIAsync: async () => 1 }, './core.mjs': core,
         './arc/client.mjs': { installArcBridge: () => ({ forTarget: () => undefined }) },
         './arc/controls.mjs': { installCalendarControls: () => ({}) },
+        './journal-tool.mjs': journalTool,
+        '../../../tool-calling.js': { ToolManager: { registerFunctionTool: t => tools.set(t.name, t), unregisterFunctionTool: name => tools.delete(name), isToolCallingSupported: () => true } },
         './runtime.mjs': { ...runtime,
             openStore: async () => ({ read: async () => structuredClone(stored), write: async data => { stored = structuredClone(data); } }),
             checkStorage: async () => {}, recoverIndex: async () => false,
             fileApi: () => ({ verify: async url => savedFiles.has(url), read: async url => savedFiles.get(url), upload: async (name, text) => { const url = '/user/files/' + name; savedFiles.set(url, text); return url; } }),
-            requestJournal: async args => { args.guard(); requests.push(core.journalMessages(args.snapshot, args.date, args.previous, args.instruction)); return 'TITLE: A private journal entry\n\n' + Array.from({ length: 30 }, () => 'I kept my own notes.').join(' '); },
+            requestJournal: async args => { args.guard(); requests.push(core.journalMessages(args.snapshot, args.date, args.previous, args.instruction, args.request)); requestDetails.push({ snapshot: structuredClone(args.snapshot), request: structuredClone(args.request) }); if (generationHook) await generationHook(args); args.guard(); return 'TITLE: A private journal entry\n\n' + Array.from({ length: 30 }, () => 'I kept my own notes.').join(' '); },
         },
     };
     const context = vm.createContext({ console, document, window: { addEventListener() {} }, navigator: { locks: { async request(key, _, fn) { if (heldLocks.has(key)) return fn(null); heldLocks.add(key); try { return await fn({}); } finally { heldLocks.delete(key); } } } },
@@ -70,10 +74,17 @@ async function harness() {
     await main.link(moduleFor); await main.evaluate();
     const app = await main.namespace.boot();
     const flush = async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); };
-    return { app, nodes, ctx, extension_settings, requests, savedFiles, events, flush,
+    return { app, nodes, ctx, extension_settings, requests, requestDetails, savedFiles, events, flush, tools, setBusy: value => { busy = value; }, setGenerationHook: hook => { generationHook = hook; },
         get serverConfig() { return serverConfig; }, failSave: value => { failSave = value; }, advance: ms => { time += ms; },
         async switchTo(name, avatar = name + '.png') { ctx.characters = [{ avatar }]; ctx.name2 = name; ctx.chatId = name + '-chat'; ctx.chat = messages(name); await events.emit('CHAT_CHANGED'); },
         async enable(value = true) { const target = nodes.get('aj-enabled'); target.checked = value; await target.onchange({ target }); await flush(); },
+        async enableTool(value = true) { const target = nodes.get('aj-atwill'); target.checked = value; await target.onchange({ target }); await flush(); },
+        async startTurn(type = 'normal', options = {}) {
+            await events.emit('GENERATION_STARTED', type, options, false);
+            const tool = tools.get('write_own_journal'); const registered = tool?.shouldRegister();
+            await events.emit('CHAT_COMPLETION_SETTINGS_READY', { messages: [{ role: 'system', content: ctx.name2 + ' CARD ONLY' }, ...ctx.chat.map(m => ({ role: m.is_user ? 'user' : 'assistant', content: m.mes }))] });
+            return { tool, registered };
+        },
     };
 }
 
@@ -140,4 +151,142 @@ test('editing Eve instructions leaves Ava exact and never edits either card', as
     assert.equal(h.extension_settings['ava-journal'].profiles['Eve.png'].instruction, 'Eve custom diary direction');
     assert.equal(h.extension_settings['ava-journal'].profiles['Ava.png'].instruction, JOURNAL_INSTRUCTION);
     assert.deepEqual(h.ctx.characters, before);
+});
+
+test('Ava can queue an extra entry during a reply, then the real writer saves once after drafts clear', async () => {
+    const h = await harness(); await h.app.tick(true); await h.enableTool();
+    const { tool, registered } = await h.startTurn(); assert.equal(registered, true);
+    h.setBusy(true);
+    const receipt = await tool.action({ focus: 'The moment we talked about the new apartment' });
+    assert.equal(receipt.status, 'queued'); assert.match(receipt.message, /not saved yet/);
+    assert.equal((await tool.action({ focus: 'A duplicate call' })).request_id, receipt.request_id);
+    await h.app.tick(); assert.equal(h.requests.length, 1);
+    h.setBusy(false); await h.events.emit('GENERATION_ENDED'); h.nodes.get('send_textarea').value = 'still typing';
+    await h.app.tick(); assert.equal(h.requests.length, 1);
+    h.nodes.get('send_textarea').value = ''; await h.app.tick();
+    assert.equal(h.requests.length, 2); assert.equal(h.savedFiles.size, 2);
+    assert.ok(h.savedFiles.has('/user/files/ava-log-2026-11-07-2.md'));
+    assert.match(h.requestDetails.at(-1).request.focus, /new apartment/);
+    assert.equal(h.app.snapshot().journalRequests[receipt.request_id].status, 'saved');
+    assert.match(h.nodes.get('aj-request-status').textContent, /Requested entry saved/);
+    assert.match(h.savedFiles.get('/user/files/ava-log-2026-11-07-2.md'), /journal_request_id:/);
+    const retry = await h.startTurn('regenerate'); assert.equal(retry.registered, true);
+    assert.equal((await retry.tool.action({})).status, 'saved');
+    await h.events.emit('GENERATION_ENDED'); await h.app.tick(); assert.equal(h.requests.length, 2);
+});
+
+test('at-will entries work with automatic journalling off and with scene hold enabled', async () => {
+    const h = await harness(); await h.enable(false); await h.enableTool();
+    const hold = h.nodes.get('aj-hold'); hold.checked = true; await hold.onchange({ target: hold }); await h.flush();
+    const { tool } = await h.startTurn(); const r = await tool.action({});
+    await h.events.emit('GENERATION_ENDED'); await h.app.tick();
+    assert.equal(h.app.snapshot().journalRequests[r.request_id].status, 'saved'); assert.equal(h.requests.length, 1);
+    assert.equal(h.extension_settings['ava-journal'].profiles['Ava.png'].enabled, false);
+    assert.equal(h.extension_settings['ava-journal'].profiles['Ava.png'].sceneHold, true);
+});
+
+test('queued entries keep the request-time context when conversation continues, and a later turn can request another', async () => {
+    const h = await harness(); await h.enableTool();
+    const first = await h.startTurn(); const r = await first.tool.action({ focus: 'the earlier moment' });
+    h.ctx.chat.push({ is_user: true, mes: 'A later topic that should not replace the saved moment', send_date: Date.parse('2026-11-07T17:00:01Z') });
+    h.advance(1000); await h.events.emit('MESSAGE_SENT');
+    const next = await h.startTurn(); const coalesced = await next.tool.action({ focus: 'second pending request' });
+    assert.equal(coalesced.request_id, r.request_id);
+    await h.events.emit('GENERATION_ENDED'); await h.app.tick();
+    assert.ok(!JSON.stringify(h.requestDetails[0].snapshot).includes('A later topic'));
+    const repeated = await h.startTurn('regenerate'); assert.equal((await repeated.tool.action({})).request_id, r.request_id);
+    h.ctx.chat.push({ is_user: true, mes: 'Please write a separate entry about this new thought', send_date: Date.parse('2026-11-07T17:00:02Z') }); h.advance(1000);
+    const another = await h.startTurn(); const second = await another.tool.action({ focus: 'the later topic' });
+    assert.notEqual(second.request_id, r.request_id);
+    await h.events.emit('GENERATION_ENDED'); await h.app.tick(); assert.equal(h.savedFiles.size, 2);
+});
+
+test('queued request waits in its own chat; other characters cannot invoke or receive it', async () => {
+    const h = await harness(); await h.enableTool();
+    const { tool } = await h.startTurn(); const r = await tool.action({ focus: 'Ava private thought' });
+    const avaChat = structuredClone(h.ctx.chat), avaChatId = h.ctx.chatId;
+    await h.switchTo('Eve');
+    await assert.rejects(tool.action({}), /no longer matches/);
+    assert.equal((await h.startTurn()).registered, false);
+    await h.events.emit('GENERATION_ENDED'); await h.app.tick(); assert.equal(h.requests.length, 0);
+    await h.switchTo('Ava'); h.ctx.chat = avaChat; h.ctx.chatId = avaChatId; await h.app.tick();
+    assert.equal(h.app.snapshot().journalRequests[r.request_id].status, 'saved');
+    assert.ok(!JSON.stringify(h.requests[0]).includes('Eve CARD'));
+});
+
+test('quiet, impersonation and automatic generations never offer the journal tool', async () => {
+    const h = await harness(); await h.enableTool();
+    for (const [type, opts] of [['quiet', {}], ['impersonate', {}], ['normal', { automatic_trigger: true }]]) {
+        const { registered } = await h.startTurn(type, opts); assert.equal(registered, false);
+    }
+    const normal = await h.startTurn(); await h.events.emit('GENERATION_ENDED');
+    await assert.rejects(normal.tool.action({}), /no longer matches/);
+    assert.equal(h.app.snapshot().journalRequests, undefined);
+});
+
+test('failed requested generation waits for explicit retry and can then save without another tool call', async () => {
+    const h = await harness(); await h.enableTool(); const { tool } = await h.startTurn(); const r = await tool.action({});
+    await h.events.emit('GENERATION_ENDED'); h.setGenerationHook(() => { throw Error('provider unavailable'); });
+    await h.app.tick(); assert.equal(h.app.snapshot().journalRequests[r.request_id].status, 'failed');
+    await h.app.tick(); assert.equal(h.requests.length, 1);
+    h.setGenerationHook(null); await h.nodes.get('aj-request-retry').onclick(); await h.app.tick();
+    assert.equal(h.requests.length, 2); assert.equal(h.app.snapshot().journalRequests[r.request_id].status, 'saved');
+});
+
+test('uncertain registration save recovers the same uploaded entry without generating again', async () => {
+    const h = await harness(); await h.enableTool(); const { tool } = await h.startTurn(); const r = await tool.action({});
+    await h.events.emit('GENERATION_ENDED'); h.failSave(true); await h.app.tick();
+    assert.equal(h.savedFiles.size, 1); assert.equal(h.requests.length, 1); assert.ok(h.app.snapshot().pending);
+    assert.equal(h.nodes.get('aj-request-cancel').disabled, true);
+    h.failSave(false); await h.app.tick();
+    assert.equal(h.requests.length, 1); assert.equal(h.savedFiles.size, 1);
+    assert.equal(h.app.snapshot().journalRequests[r.request_id].status, 'saved'); assert.equal(h.app.snapshot().pending, null);
+});
+
+test('cancelled request stays cancelled on regeneration; disabling requests pauses a queued entry', async () => {
+    const h = await harness(); await h.enableTool(); const { tool } = await h.startTurn(); const r = await tool.action({});
+    await h.events.emit('GENERATION_ENDED'); await h.enableTool(false); await h.app.tick(); assert.equal(h.requests.length, 0);
+    await h.nodes.get('aj-request-cancel').onclick(); assert.equal(h.app.snapshot().journalRequests[r.request_id].status, 'cancelled');
+    await h.enableTool(); const regen = await h.startTurn('regenerate'); assert.equal((await regen.tool.action({})).status, 'cancelled');
+    await h.events.emit('GENERATION_ENDED'); await h.app.tick(); assert.equal(h.requests.length, 0);
+});
+
+test('failed tool-setting save restores the opt-in and leaves existing journal instructions unchanged', async () => {
+    const h = await harness(); h.failSave(true); await h.enableTool();
+    assert.equal(h.nodes.get('aj-atwill').checked, false);
+    assert.equal(core.migrateConfig(h.extension_settings['ava-journal']).profiles['Ava.png'].instruction, JOURNAL_INSTRUCTION);
+    assert.equal((await h.startTurn()).registered, false);
+});
+
+test('queued request survives a fresh extension boot and uses its persisted snapshot without another model tool call', async () => {
+    const first = await harness(); await first.enableTool(); const { tool } = await first.startTurn();
+    const r = await tool.action({ focus: 'Keep this thought across reload' });
+    const reloaded = await harness({ db: first.app.snapshot(), settings: first.extension_settings });
+    await reloaded.app.tick(); assert.equal(reloaded.savedFiles.size, 1);
+    assert.equal(reloaded.app.snapshot().journalRequests[r.request_id].status, 'saved');
+    assert.equal(reloaded.requestDetails[0].request.focus, 'Keep this thought across reload');
+});
+
+test('conversation activity during requested writing discards output but preserves the request for its next safe opportunity', async () => {
+    const h = await harness(); await h.enableTool(); const { tool } = await h.startTurn(); const r = await tool.action({});
+    await h.events.emit('GENERATION_ENDED');
+    h.setGenerationHook(async () => { h.nodes.get('send_textarea').value = 'a new draft'; await h.events.emit('MESSAGE_EDITED'); });
+    await h.app.tick(); assert.equal(h.savedFiles.size, 0); assert.equal(h.app.snapshot().journalRequests[r.request_id].status, 'queued');
+    h.setGenerationHook(null); h.nodes.get('send_textarea').value = ''; h.advance(3000); await h.app.tick();
+    assert.equal(h.savedFiles.size, 1); assert.equal(h.app.snapshot().journalRequests[r.request_id].status, 'saved');
+});
+
+test('cancel during a requested generation discards its output and prevents later retries', async () => {
+    const h = await harness(); await h.enableTool(); const { tool } = await h.startTurn(); const r = await tool.action({});
+    await h.events.emit('GENERATION_ENDED'); h.setGenerationHook(() => h.nodes.get('aj-request-cancel').onclick());
+    await h.app.tick(); assert.equal(h.savedFiles.size, 0); assert.equal(h.app.snapshot().journalRequests[r.request_id].status, 'cancelled');
+    h.setGenerationHook(null); h.advance(10000); await h.app.tick(); assert.equal(h.requests.length, 1);
+});
+
+test('journal tool rejects state edits, arbitrary IDs and oversized input without creating a request', async () => {
+    const h = await harness(); await h.enableTool(); const { tool } = await h.startTurn();
+    for (const args of [{ avatar: 'Eve.png' }, { requestId: 'new' }, { override: 'birth' }, { focus: 'x'.repeat(601) }, null]) {
+        await assert.rejects(tool.action(args), /short optional focus/);
+    }
+    assert.equal(h.app.snapshot().journalRequests, undefined);
 });
